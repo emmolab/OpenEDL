@@ -1,0 +1,1 @@
+ALTER TABLE `auth_users` ADD `deleted_at` text;

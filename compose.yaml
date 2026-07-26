@@ -1,0 +1,16 @@
+services:
+  openedl:
+    image: ghcr.io/emmolab/openedl:latest
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${OPENEDL_PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_PATH: /data/openedl.sqlite
+    volumes:
+      - openedl-data:/data
+
+volumes:
+  openedl-data:
