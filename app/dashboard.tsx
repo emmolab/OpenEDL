@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { AppearanceSettings } from "./appearance-settings";
+import { InitialSetup } from "./initial-setup";
 import { ProfileSettings } from "./profile-settings";
 import { SsoSettings } from "./sso-settings";
 import { UserManagement } from "./user-management";
@@ -149,6 +150,7 @@ export function Dashboard() {
   const [needsToken, setNeedsToken] = useState(false);
   const [providers, setProviders] = useState<AuthProvider[]>([]);
   const [adminTokenEnabled, setAdminTokenEnabled] = useState(false);
+  const [setupRequired, setSetupRequired] = useState<boolean | null>(null);
   const [currentUser, setCurrentUser] = useState<ManagementUser | null>(null);
   const [appTheme, setAppTheme] = useState<AppTheme>(() => {
     if (typeof window === "undefined") return "signal";
@@ -245,6 +247,28 @@ export function Dashboard() {
           .then((payload) => {
             setProviders(payload.providers ?? []);
             setAdminTokenEnabled(Boolean(payload.adminTokenEnabled));
+          }),
+        fetch("/api/setup", { cache: "no-store" })
+          .then(async (response) => {
+            const payload = (await response.json()) as {
+              required?: boolean;
+              error?: string;
+            };
+            if (!response.ok) {
+              throw new Error(
+                payload.error ?? "Unable to inspect initial setup.",
+              );
+            }
+            return payload;
+          })
+          .then((payload) => setSetupRequired(Boolean(payload.required)))
+          .catch((error) => {
+            setNotice(
+              error instanceof Error
+                ? error.message
+                : "Unable to inspect initial setup.",
+            );
+            setSetupRequired(false);
           }),
         apiFetch("/api/auth/session")
           .then(
@@ -564,6 +588,19 @@ export function Dashboard() {
     }
   }
 
+  async function completeInitialSetup() {
+    const sessionResponse = await fetch("/api/auth/session", {
+      cache: "no-store",
+    });
+    const session = (await sessionResponse.json()) as {
+      user?: ManagementUser | null;
+    };
+    setCurrentUser(session.user ?? null);
+    setSetupRequired(false);
+    setNeedsToken(false);
+    await loadDashboard();
+  }
+
   async function signOut() {
     await apiFetch("/api/auth/logout", { method: "POST" });
     window.sessionStorage.removeItem("openedl-admin-token");
@@ -572,6 +609,24 @@ export function Dashboard() {
     setCurrentUser(null);
     setData(null);
     setNeedsToken(true);
+  }
+
+  if (setupRequired === null) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-card setup-loading" aria-live="polite">
+          <div className="brand-mark" aria-hidden="true">
+            OE
+          </div>
+          <div className="loading-orbit" aria-hidden="true" />
+          <p>Preparing secure access…</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (setupRequired) {
+    return <InitialSetup onComplete={completeInitialSetup} />;
   }
 
   if (needsToken) {

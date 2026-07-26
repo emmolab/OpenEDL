@@ -1399,6 +1399,49 @@ button:disabled {
   padding-top: 4px;
 }
 
+.setup-card {
+  width: min(460px, 100%);
+}
+
+.setup-loading {
+  display: grid;
+  min-height: 280px;
+  place-items: center;
+  align-content: center;
+  gap: 18px;
+  text-align: center;
+}
+
+.setup-loading .brand-mark {
+  margin-bottom: 4px;
+}
+
+.setup-loading p {
+  margin: 0;
+}
+
+.setup-notice {
+  border: 1px solid color-mix(in srgb, var(--lime) 38%, var(--line));
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  margin-top: 18px;
+  padding: 11px 12px;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.setup-card .form-error {
+  margin-top: 14px;
+}
+
+.field-hint {
+  color: var(--muted);
+  margin-top: -6px;
+  font-size: 9px;
+}
+
 .user-summary {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

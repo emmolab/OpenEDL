@@ -112,9 +112,9 @@ published at `http://localhost:3000/edl/perimeter-blocklist`.
 The default remote feeds include the Emerging Threats firewall IP blocklist at
 `https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt`.
 
-Copy `.env.example` to `.env` and configure at least one management access
-method. Localhost allows a development-only bypass when no provider or admin
-token is configured; non-local deployments fail closed.
+Copy `.env.example` to `.env`. A new database opens a one-time setup screen
+where you create the initial local administrator. After that account exists,
+the setup endpoint closes and all management access requires authentication.
 
 ### Local accounts
 
@@ -123,12 +123,11 @@ the **Users** screen. Local passwords are salted and hashed with
 PBKDF2-HMAC-SHA256 at 600,000 iterations. Five failed attempts lock an account
 for 15 minutes.
 
-For the first production login, configure
+For unattended deployments, you can instead configure
 `LOCAL_AUTH_BOOTSTRAP_EMAIL`, `LOCAL_AUTH_BOOTSTRAP_PASSWORD`, and optionally
 `LOCAL_AUTH_BOOTSTRAP_NAME`. The bootstrap account is created as an
-administrator on its first sign-in. Remove the bootstrap password secret after
-that account exists. You can alternatively use OIDC or `ADMIN_TOKEN` to enter
-the dashboard and create the first local user.
+administrator when the application first initializes. Remove the bootstrap
+password secret after that account exists.
 
 ### GUI-managed SSO
 

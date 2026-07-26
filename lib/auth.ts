@@ -825,7 +825,7 @@ async function ensureBootstrapLocalAdmin() {
   const password = await hashPassword(configuredPassword);
   await database
     .prepare(
-      `INSERT INTO auth_users (
+      `INSERT OR IGNORE INTO auth_users (
         provider, subject, email, name, role, active, password_hash,
         password_salt, password_iterations, updated_at, last_login_at
       ) VALUES (
@@ -1057,6 +1057,8 @@ export async function getManagementIdentity(
     };
   }
 
+  await ensureBootstrapLocalAdmin();
+
   const sessionToken = cookieValue(request, SESSION_COOKIE);
   if (sessionToken) {
     await ensureDatabase();
@@ -1074,37 +1076,6 @@ export async function getManagementIdentity(
       .bind(tokenHash)
       .first<SessionRow>();
     if (user) return user;
-  }
-
-  const requestUrl = new URL(request.url);
-  const hasProviders = (await configuredProviders()).length > 0;
-  let hasUsers = true;
-  if (
-    !configuredToken &&
-    !hasProviders &&
-    ["localhost", "127.0.0.1", "::1"].includes(requestUrl.hostname)
-  ) {
-    await ensureBootstrapLocalAdmin();
-    await ensureDatabase();
-    const count = await getD1()
-      .prepare("SELECT COUNT(*) AS count FROM auth_users")
-      .first<{ count: number }>();
-    hasUsers = (count?.count ?? 0) > 0;
-  }
-  if (
-    !configuredToken &&
-    !hasProviders &&
-    !hasUsers &&
-    ["localhost", "127.0.0.1", "::1"].includes(requestUrl.hostname)
-  ) {
-    return {
-      id: null,
-      name: "Local administrator",
-      email: "local@openedl.dev",
-      picture: null,
-      provider: "development",
-      role: "admin",
-    };
   }
 
   return null;
@@ -1129,7 +1100,7 @@ export async function updateOwnProfile(
   },
 ) {
   if (identity.id === null) {
-    throw new Error("Recovery and development identities do not have profiles.");
+    throw new Error("Recovery identities do not have profiles.");
   }
   await ensureDatabase();
   const database = getD1();
@@ -1239,6 +1210,85 @@ export class LocalAuthenticationError extends Error {
   ) {
     super(message);
   }
+}
+
+export class InitialSetupError extends Error {
+  constructor(
+    message: string,
+    public readonly status = 400,
+  ) {
+    super(message);
+  }
+}
+
+export async function isInitialSetupRequired() {
+  await ensureBootstrapLocalAdmin();
+  await ensureDatabase();
+  const row = await getD1()
+    .prepare("SELECT COUNT(*) AS count FROM auth_users")
+    .first<{ count: number }>();
+  return (row?.count ?? 0) === 0;
+}
+
+export async function createInitialAdministrator(
+  request: Request,
+  input: {
+    name: string;
+    email: string;
+    password: string;
+  },
+) {
+  await ensureBootstrapLocalAdmin();
+  await ensureDatabase();
+
+  const name = validateName(input.name);
+  const email = normalizedEmail(input.email);
+  const password = await hashPassword(input.password);
+  const result = await getD1()
+    .prepare(
+      `INSERT INTO auth_users (
+        provider, subject, email, name, role, active, password_hash,
+        password_salt, password_iterations, updated_at, last_login_at
+      )
+      SELECT
+        'local', ?, ?, ?, 'admin', 1, ?, ?, ?,
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      WHERE NOT EXISTS (SELECT 1 FROM auth_users)`,
+    )
+    .bind(
+      email,
+      email,
+      name,
+      password.hash,
+      password.salt,
+      password.iterations,
+    )
+    .run();
+
+  if (result.meta.changes !== 1) {
+    throw new InitialSetupError(
+      "Initial setup is already complete. Sign in with an existing account.",
+      409,
+    );
+  }
+
+  const userId = Number(result.meta.last_row_id);
+  const user = await getManagedUser(userId);
+  if (!user) {
+    throw new Error("The administrator was created but could not be loaded.");
+  }
+
+  return {
+    cookie: await createSession(request, userId),
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      picture: user.picture,
+      provider: user.provider,
+      role: user.role,
+    } satisfies ManagementIdentity,
+  };
 }
 
 export async function loginWithLocalAccount(

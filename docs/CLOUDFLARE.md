@@ -89,8 +89,10 @@ OIDC_PROVIDERS_JSON=[]
 ADMIN_TOKEN=
 ```
 
-Configure at least one management access method: a bootstrap local account, an
-OIDC provider, or an emergency `ADMIN_TOKEN`. Generate a GUI-managed SSO
+If no bootstrap credentials are supplied, the first visit displays a one-time
+administrator creation screen. Complete it immediately after deployment,
+before exposing the Worker URL to other users. For unattended deployments,
+configure the bootstrap local account instead. Generate a GUI-managed SSO
 encryption key with:
 
 ```bash
