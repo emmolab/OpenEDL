@@ -21,6 +21,7 @@ ENV NODE_ENV=production \
 
 COPY --from=build --chown=node:node /app/dist/standalone/ ./
 COPY --chown=node:node docker/entrypoint.mjs ./docker-entrypoint.mjs
+COPY --chown=node:node scripts/openedl-cli.mjs ./openedl-cli.mjs
 
 RUN mkdir -p /data && chown node:node /data
 

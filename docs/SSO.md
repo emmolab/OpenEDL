@@ -224,12 +224,8 @@ Each issuer and discovery URL must use HTTPS.
 ## Initial administrator and user provisioning
 
 You need an administrator identity to configure providers through the GUI.
-Choose one of these bootstrap methods:
-
-- Open a new deployment and complete the one-time administrator creation
-  screen.
-- Configure `LOCAL_AUTH_BOOTSTRAP_EMAIL` and
-  `LOCAL_AUTH_BOOTSTRAP_PASSWORD` for unattended initialization.
+Open a new deployment and complete the one-time administrator creation screen.
+Account bootstrap credentials are not accepted from environment configuration.
 
 The setup screen and setup API close as soon as any user record exists. Complete
 first-run setup before exposing a new deployment to other users. A strong
@@ -305,5 +301,4 @@ Before relying exclusively on SSO:
 4. Confirm an account outside the allowlist is rejected.
 5. Verify that a second administrator or recovery method works.
 6. Back up the OpenEDL database and `CONFIG_ENCRYPTION_KEY`.
-7. Remove bootstrap passwords and temporary recovery tokens that are no longer
-   required.
+7. Remove temporary recovery tokens that are no longer required.

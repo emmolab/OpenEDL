@@ -13,9 +13,6 @@ type RuntimeEnv = {
   MICROSOFT_OIDC_CLIENT_SECRET?: string;
   MICROSOFT_OIDC_TENANT_ID?: string;
   OIDC_PROVIDERS_JSON?: string;
-  LOCAL_AUTH_BOOTSTRAP_EMAIL?: string;
-  LOCAL_AUTH_BOOTSTRAP_PASSWORD?: string;
-  LOCAL_AUTH_BOOTSTRAP_NAME?: string;
   CONFIG_ENCRYPTION_KEY?: string;
 };
 
@@ -800,50 +797,6 @@ async function createSession(request: Request, userId: number) {
   return sessionCookie(request, sessionToken, SESSION_SECONDS);
 }
 
-async function ensureBootstrapLocalAdmin() {
-  const configuredEmail = runtimeEnv.LOCAL_AUTH_BOOTSTRAP_EMAIL?.trim();
-  const configuredPassword = runtimeEnv.LOCAL_AUTH_BOOTSTRAP_PASSWORD;
-  if (!configuredEmail && !configuredPassword) return;
-  if (!configuredEmail || !configuredPassword) {
-    throw new Error(
-      "Both LOCAL_AUTH_BOOTSTRAP_EMAIL and LOCAL_AUTH_BOOTSTRAP_PASSWORD are required.",
-    );
-  }
-
-  const email = normalizedEmail(configuredEmail);
-  validatePassword(configuredPassword);
-  await ensureDatabase();
-  const database = getD1();
-  const existing = await database
-    .prepare(
-      "SELECT id FROM auth_users WHERE provider = 'local' AND subject = ?",
-    )
-    .bind(email)
-    .first<{ id: number }>();
-  if (existing) return;
-
-  const password = await hashPassword(configuredPassword);
-  await database
-    .prepare(
-      `INSERT OR IGNORE INTO auth_users (
-        provider, subject, email, name, role, active, password_hash,
-        password_salt, password_iterations, updated_at, last_login_at
-      ) VALUES (
-        'local', ?, ?, ?, 'admin', 1, ?, ?, ?,
-        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-      )`,
-    )
-    .bind(
-      email,
-      email,
-      runtimeEnv.LOCAL_AUTH_BOOTSTRAP_NAME?.trim() || "OpenEDL administrator",
-      password.hash,
-      password.salt,
-      password.iterations,
-    )
-    .run();
-}
-
 export async function beginOidcLogin(
   request: Request,
   providerId: string,
@@ -1057,8 +1010,6 @@ export async function getManagementIdentity(
     };
   }
 
-  await ensureBootstrapLocalAdmin();
-
   const sessionToken = cookieValue(request, SESSION_COOKIE);
   if (sessionToken) {
     await ensureDatabase();
@@ -1222,7 +1173,6 @@ export class InitialSetupError extends Error {
 }
 
 export async function isInitialSetupRequired() {
-  await ensureBootstrapLocalAdmin();
   await ensureDatabase();
   const row = await getD1()
     .prepare("SELECT COUNT(*) AS count FROM auth_users")
@@ -1238,7 +1188,6 @@ export async function createInitialAdministrator(
     password: string;
   },
 ) {
-  await ensureBootstrapLocalAdmin();
   await ensureDatabase();
 
   const name = validateName(input.name);
@@ -1296,7 +1245,6 @@ export async function loginWithLocalAccount(
   emailValue: string,
   password: string,
 ) {
-  await ensureBootstrapLocalAdmin();
   await ensureDatabase();
   const database = getD1();
   let email: string;
@@ -1428,7 +1376,6 @@ const managedUserSelect = `SELECT
 FROM auth_users`;
 
 export async function listManagedUsers() {
-  await ensureBootstrapLocalAdmin();
   await ensureDatabase();
   const { results } = await getD1()
     .prepare(

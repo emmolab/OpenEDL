@@ -41,7 +41,7 @@ async function waitForServer(baseUrl, child, output) {
   throw new Error(`Timed out waiting for OpenEDL.\n${output()}`);
 }
 
-test("first-run setup creates exactly one administrator and signs them in", {
+test("first-run setup ignores legacy bootstrap variables, creates one administrator, and signs them in", {
   timeout: 30_000,
 }, async (context) => {
   const workingDirectory = await mkdtemp(join(tmpdir(), "openedl-setup-"));
@@ -57,9 +57,9 @@ test("first-run setup creates exactly one administrator and signs them in", {
       DATABASE_PATH: join(workingDirectory, "openedl.sqlite"),
       HOST: "127.0.0.1",
       HOSTNAME: "127.0.0.1",
-      LOCAL_AUTH_BOOTSTRAP_EMAIL: "",
-      LOCAL_AUTH_BOOTSTRAP_NAME: "",
-      LOCAL_AUTH_BOOTSTRAP_PASSWORD: "",
+      LOCAL_AUTH_BOOTSTRAP_EMAIL: "legacy-bootstrap@example.com",
+      LOCAL_AUTH_BOOTSTRAP_NAME: "Legacy bootstrap",
+      LOCAL_AUTH_BOOTSTRAP_PASSWORD: "this must no longer create an account",
       OIDC_PROVIDERS_JSON: "",
       PORT: String(port),
     },

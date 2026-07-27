@@ -49,8 +49,8 @@ both AMD64 and ARM64:
 ghcr.io/emmolab/openedl:latest
 ```
 
-Copy the environment template, configure the public URL and at least one
-management access method, then start the service:
+Copy the environment template, configure the public URL, then start the
+service:
 
 ```bash
 cp .env.example .env
@@ -68,6 +68,11 @@ given database volume. Updates are applied with:
 docker compose pull
 docker compose up -d
 ```
+
+That volume survives container recreation. The setup screen appears only when
+the database contains no users, so an administrator created by an earlier
+deployment remains in place after an upgrade. Do not remove a production data
+volume to recover access; use the password-reset command below.
 
 Set a strong `CRON_SECRET` in `.env` to enable the container's automatic
 five-minute refresh check:
@@ -123,11 +128,19 @@ the **Users** screen. Local passwords are salted and hashed with
 PBKDF2-HMAC-SHA256 at 600,000 iterations. Five failed attempts lock an account
 for 15 minutes.
 
-For unattended deployments, you can instead configure
-`LOCAL_AUTH_BOOTSTRAP_EMAIL`, `LOCAL_AUTH_BOOTSTRAP_PASSWORD`, and optionally
-`LOCAL_AUTH_BOOTSTRAP_NAME`. The bootstrap account is created as an
-administrator when the application first initializes. Remove the bootstrap
-password secret after that account exists.
+The initial administrator is created only through this one-time setup screen;
+OpenEDL does not accept bootstrap account credentials from configuration.
+
+If the local administrator password is lost, reset it from the container:
+
+```bash
+docker compose exec openedl node openedl-cli.mjs reset-admin-password admin@example.com
+```
+
+Omit the email when the database contains exactly one local administrator. The
+command prompts for the new password without echoing it, clears login lockout,
+and revokes that administrator's existing sessions. For a local source
+checkout, run `npm run admin:reset-password -- admin@example.com` instead.
 
 ### GUI-managed SSO
 

@@ -72,10 +72,6 @@ Git and is uploaded by the deployment command:
 AUTH_BASE_URL=https://edl.example.com
 CONFIG_ENCRYPTION_KEY=
 
-LOCAL_AUTH_BOOTSTRAP_EMAIL=admin@example.com
-LOCAL_AUTH_BOOTSTRAP_PASSWORD=
-LOCAL_AUTH_BOOTSTRAP_NAME=OpenEDL administrator
-
 GOOGLE_OIDC_CLIENT_ID=
 GOOGLE_OIDC_CLIENT_SECRET=
 
@@ -89,11 +85,9 @@ OIDC_PROVIDERS_JSON=[]
 ADMIN_TOKEN=
 ```
 
-If no bootstrap credentials are supplied, the first visit displays a one-time
-administrator creation screen. Complete it immediately after deployment,
-before exposing the Worker URL to other users. For unattended deployments,
-configure the bootstrap local account instead. Generate a GUI-managed SSO
-encryption key with:
+The first visit displays a one-time administrator creation screen. Complete it
+immediately after deployment, before exposing the Worker URL to other users.
+Generate a GUI-managed SSO encryption key with:
 
 ```bash
 openssl rand -base64 32
