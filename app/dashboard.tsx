@@ -15,6 +15,11 @@ type Source = {
   type: "ip" | "domain" | "url";
   format: "auto" | "text" | "json" | "csv";
   manual_entries?: string;
+  api_provider: string | null;
+  api_auth_type: "none" | "bearer" | "header";
+  api_auth_header: string | null;
+  has_api_secret: boolean;
+  json_path: string;
   enabled: boolean;
   entry_count: number;
   status: "pending" | "healthy" | "degraded" | "disabled";
@@ -47,11 +52,16 @@ type DashboardResponse = {
 
 type SourceForm = {
   name: string;
-  kind: "remote" | "manual";
+  kind: "remote" | "manual" | "api";
   url: string;
   manualEntries: string;
   format: "auto" | "text" | "json" | "csv";
   role: "include" | "exclude";
+  apiProvider: "recorded_future" | "generic";
+  apiAuthType: "bearer" | "header";
+  apiAuthHeader: string;
+  apiSecret: string;
+  jsonPath: string;
   refreshIntervalMinutes: number;
 };
 
@@ -78,6 +88,11 @@ const emptyForm: SourceForm = {
   manualEntries: "",
   format: "auto",
   role: "include",
+  apiProvider: "recorded_future",
+  apiAuthType: "header",
+  apiAuthHeader: "X-RFToken",
+  apiSecret: "",
+  jsonPath: "",
   refreshIntervalMinutes: 60,
 };
 
@@ -522,6 +537,14 @@ export function Dashboard() {
           listId: list.id,
           type: list.type,
           ...form,
+          kind: form.kind === "api" ? "remote" : form.kind,
+          apiProvider: form.kind === "api" ? form.apiProvider : "",
+          apiAuthType: form.kind === "api" ? form.apiAuthType : "none",
+          apiSecret: form.kind === "api" ? form.apiSecret : "",
+          jsonPath:
+            form.kind === "api" && form.format === "json"
+              ? form.jsonPath
+              : "",
         }),
       });
       const payload = (await response.json()) as {
@@ -545,6 +568,62 @@ export function Dashboard() {
         error instanceof Error ? error.message : "Unable to add source.",
       );
     }
+  }
+
+  async function loadCsvFile(
+    file: File | undefined,
+    target: "new" | "edit",
+  ) {
+    if (!file) return;
+    if (file.size > 2_000_000) {
+      setFormError("CSV uploads must be 2 MB or smaller.");
+      return;
+    }
+    try {
+      const contents = await file.text();
+      if (!contents.trim()) throw new Error("The selected CSV file is empty.");
+      if (target === "new") {
+        setForm((current) => ({
+          ...current,
+          name: current.name || file.name.replace(/\.csv$/i, ""),
+          kind: "manual",
+          format: "csv",
+          manualEntries: contents,
+        }));
+      } else {
+        setManualDraft(contents);
+      }
+      setFormError("");
+    } catch (error) {
+      setFormError(
+        error instanceof Error ? error.message : "Unable to read the CSV file.",
+      );
+    }
+  }
+
+  function selectApiProvider(provider: SourceForm["apiProvider"]) {
+    if (!list) return;
+    if (provider === "recorded_future") {
+      setForm((current) => ({
+        ...current,
+        apiProvider: provider,
+        apiAuthType: "header",
+        apiAuthHeader: "X-RFToken",
+        format: "csv",
+        jsonPath: "",
+        url: `https://api.recordedfuture.com/v2/${list.type}/risklist?format=csv%2Fsplunk&list=default`,
+      }));
+      return;
+    }
+    setForm((current) => ({
+      ...current,
+      apiProvider: provider,
+      url: "",
+      apiAuthType: "bearer",
+      apiAuthHeader: "X-API-Key",
+      format: "auto",
+      jsonPath: "",
+    }));
   }
 
   function unlock(event: FormEvent<HTMLFormElement>) {
@@ -999,7 +1078,9 @@ export function Dashboard() {
                                 <span title={source.url ?? "Manual entries"}>
                                   {source.kind === "manual"
                                     ? "Manual entries"
-                                    : source.url}
+                                    : source.api_provider
+                                      ? `${source.api_provider === "recorded_future" ? "Recorded Future" : "API"} · ${source.url}`
+                                      : source.url}
                                 </span>
                               </div>
                               <div className="source-count">
@@ -1216,7 +1297,17 @@ export function Dashboard() {
                   className={form.kind === "manual" ? "active" : ""}
                   onClick={() => setForm({ ...form, kind: "manual" })}
                 >
-                  Manual entries
+                  CSV / manual
+                </button>
+                <button
+                  type="button"
+                  className={form.kind === "api" ? "active" : ""}
+                  onClick={() => {
+                    setForm({ ...form, kind: "api" });
+                    if (!form.url) selectApiProvider(form.apiProvider);
+                  }}
+                >
+                  API connection
                 </button>
               </div>
 
@@ -1235,9 +1326,21 @@ export function Dashboard() {
                   />
                   <small>HTTP and HTTPS only. Private networks are blocked.</small>
                 </div>
-              ) : (
+              ) : form.kind === "manual" ? (
                 <div className="field">
                   <label htmlFor="manual-entries">Entries</label>
+                  <input
+                    id="manual-csv-upload"
+                    type="file"
+                    accept=".csv,text/csv"
+                    onChange={(event) => {
+                      void loadCsvFile(event.target.files?.[0], "new");
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                  <small>
+                    Upload a CSV up to 2 MB, or paste entries below.
+                  </small>
                   <textarea
                     id="manual-entries"
                     value={form.manualEntries}
@@ -1248,8 +1351,104 @@ export function Dashboard() {
                     rows={7}
                     required
                   />
-                  <small>One {list.type.toUpperCase()} entry per line.</small>
+                  <small>
+                    CSV cells are scanned for valid {list.type.toUpperCase()}{" "}
+                    entries; headers and unrelated columns are ignored.
+                  </small>
                 </div>
+              ) : (
+                <>
+                  <div className="field">
+                    <label htmlFor="api-provider">API provider</label>
+                    <select
+                      id="api-provider"
+                      value={form.apiProvider}
+                      onChange={(event) =>
+                        selectApiProvider(
+                          event.target.value as SourceForm["apiProvider"],
+                        )
+                      }
+                    >
+                      <option value="recorded_future">Recorded Future</option>
+                      <option value="generic">Generic API</option>
+                    </select>
+                    {form.apiProvider === "recorded_future" && (
+                      <small>
+                        Uses the Recorded Future {list.type.toUpperCase()} risk
+                        list endpoint and X-RFToken authentication.
+                      </small>
+                    )}
+                  </div>
+                  <div className="field">
+                    <label htmlFor="api-url">API endpoint</label>
+                    <input
+                      id="api-url"
+                      type="url"
+                      value={form.url}
+                      onChange={(event) =>
+                        setForm({ ...form, url: event.target.value })
+                      }
+                      placeholder="https://api.vendor.example/v1/indicators"
+                      required
+                    />
+                    <small>
+                      Query parameters may select the vendor list or risk rule.
+                    </small>
+                  </div>
+                  <div className="form-grid">
+                    <div className="field">
+                      <label htmlFor="api-auth-type">Authentication</label>
+                      <select
+                        id="api-auth-type"
+                        value={form.apiAuthType}
+                        onChange={(event) =>
+                          setForm({
+                            ...form,
+                            apiAuthType: event.target
+                              .value as SourceForm["apiAuthType"],
+                          })
+                        }
+                      >
+                        <option value="header">API key header</option>
+                        <option value="bearer">Bearer token</option>
+                      </select>
+                    </div>
+                    {form.apiAuthType === "header" && (
+                      <div className="field">
+                        <label htmlFor="api-auth-header">Header name</label>
+                        <input
+                          id="api-auth-header"
+                          value={form.apiAuthHeader}
+                          onChange={(event) =>
+                            setForm({
+                              ...form,
+                              apiAuthHeader: event.target.value,
+                            })
+                          }
+                          placeholder="X-API-Key"
+                          required
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <div className="field">
+                    <label htmlFor="api-secret">API token / key</label>
+                    <input
+                      id="api-secret"
+                      type="password"
+                      value={form.apiSecret}
+                      onChange={(event) =>
+                        setForm({ ...form, apiSecret: event.target.value })
+                      }
+                      autoComplete="new-password"
+                      required
+                    />
+                    <small>
+                      Encrypted before storage. The credential is never returned
+                      by the API.
+                    </small>
+                  </div>
+                </>
               )}
 
               <div className="form-grid">
@@ -1289,7 +1488,25 @@ export function Dashboard() {
                 </div>
               </div>
 
-              {form.kind === "remote" && (
+              {form.kind === "api" && form.format === "json" && (
+                <div className="field">
+                  <label htmlFor="json-path">JSON value path</label>
+                  <input
+                    id="json-path"
+                    value={form.jsonPath}
+                    onChange={(event) =>
+                      setForm({ ...form, jsonPath: event.target.value })
+                    }
+                    placeholder="data.results[].entity.name"
+                  />
+                  <small>
+                    Optional dot path; append [] to array fields. Leave blank to
+                    scan all JSON values.
+                  </small>
+                </div>
+              )}
+
+              {form.kind !== "manual" && (
                 <div className="field">
                   <label htmlFor="refresh-schedule">Refresh schedule</label>
                   <select
@@ -1380,6 +1597,16 @@ export function Dashboard() {
               </div>
               <div className="field">
                 <label htmlFor="manual-source-entries">Entries</label>
+                <input
+                  id="manual-source-csv-upload"
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={(event) => {
+                    void loadCsvFile(event.target.files?.[0], "edit");
+                    event.currentTarget.value = "";
+                  }}
+                />
+                <small>Replace the source from a CSV file up to 2 MB.</small>
                 <textarea
                   id="manual-source-entries"
                   value={manualDraft}

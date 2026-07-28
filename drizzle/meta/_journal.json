@@ -50,6 +50,13 @@
       "when": 1785061315215,
       "tag": "0006_kind_toad",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1785240945516,
+      "tag": "0007_purple_mac_gargan",
+      "breakpoints": true
     }
   ]
 }

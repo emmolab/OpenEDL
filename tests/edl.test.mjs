@@ -49,6 +49,39 @@ test("extracts typed values from JSON and CSV sources", () => {
   );
 });
 
+test("extracts a configured JSON array path for API responses", () => {
+  assert.deepEqual(
+    normalizeEntries(
+      JSON.stringify({
+        data: {
+          results: [
+            { entity: { name: "one.example" }, risk: { score: 99 } },
+            { entity: { name: "two.example" }, risk: { score: 80 } },
+          ],
+        },
+      }),
+      "domain",
+      "json",
+      "data.results[].entity.name",
+    ),
+    ["one.example", "two.example"],
+  );
+});
+
+test("parses quoted CSV fields without splitting embedded commas", () => {
+  assert.deepEqual(
+    normalizeEntries(
+      [
+        "Name,Risk,Evidence",
+        '"203.0.113.8",99,"reported by source one, source two"',
+      ].join("\n"),
+      "ip",
+      "csv",
+    ),
+    ["203.0.113.8"],
+  );
+});
+
 test("an exclusion wins even when the IP appears in multiple include feeds", () => {
   assert.deepEqual(
     aggregateEntries(

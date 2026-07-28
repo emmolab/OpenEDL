@@ -35,6 +35,16 @@ export const sources = sqliteTable(
       .notNull()
       .default("auto"),
     manualEntries: text("manual_entries").notNull().default(""),
+    apiProvider: text("api_provider"),
+    apiAuthType: text("api_auth_type", {
+      enum: ["none", "bearer", "header"],
+    })
+      .notNull()
+      .default("none"),
+    apiAuthHeader: text("api_auth_header"),
+    apiSecretCiphertext: text("api_secret_ciphertext"),
+    apiSecretIv: text("api_secret_iv"),
+    jsonPath: text("json_path").notNull().default(""),
     enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
     cachedEntries: text("cached_entries").notNull().default("[]"),
     entryCount: integer("entry_count").notNull().default(0),

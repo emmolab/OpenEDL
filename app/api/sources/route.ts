@@ -29,6 +29,11 @@ export async function POST(request: Request) {
       role?: SourceRole;
       kind?: "remote" | "manual";
       manualEntries?: string;
+      apiProvider?: string;
+      apiAuthType?: "none" | "bearer" | "header";
+      apiAuthHeader?: string;
+      apiSecret?: string;
+      jsonPath?: string;
       refreshIntervalMinutes?: number;
     };
 
@@ -68,6 +73,47 @@ export async function POST(request: Request) {
       );
     }
     if (kind === "remote") assertSafeSourceUrl(url);
+    const apiProvider = payload.apiProvider?.trim() ?? "";
+    const apiAuthType = payload.apiAuthType ?? "none";
+    if (!["none", "bearer", "header"].includes(apiAuthType)) {
+      return Response.json(
+        { error: "Invalid API authentication type." },
+        { status: 400 },
+      );
+    }
+    if (apiProvider && apiAuthType === "none") {
+      return Response.json(
+        { error: "API connections require an authentication method." },
+        { status: 400 },
+      );
+    }
+    if (apiAuthType !== "none" && !payload.apiSecret?.trim()) {
+      return Response.json(
+        { error: "Enter the API token or key." },
+        { status: 400 },
+      );
+    }
+    if (
+      apiAuthType === "header" &&
+      !/^[A-Za-z0-9-]{1,64}$/.test(payload.apiAuthHeader?.trim() ?? "")
+    ) {
+      return Response.json(
+        { error: "Enter a valid API authentication header name." },
+        { status: 400 },
+      );
+    }
+    if ((payload.apiSecret?.length ?? 0) > 4096) {
+      return Response.json(
+        { error: "API credential is too long." },
+        { status: 400 },
+      );
+    }
+    if ((payload.jsonPath?.length ?? 0) > 256) {
+      return Response.json(
+        { error: "JSON path is too long." },
+        { status: 400 },
+      );
+    }
     const refreshIntervalMinutes = payload.refreshIntervalMinutes ?? 60;
     if (
       !Number.isInteger(refreshIntervalMinutes) ||
@@ -89,6 +135,11 @@ export async function POST(request: Request) {
       role: payload.role,
       kind,
       manualEntries,
+      apiProvider,
+      apiAuthType,
+      apiAuthHeader: payload.apiAuthHeader?.trim(),
+      apiSecret: payload.apiSecret?.trim(),
+      jsonPath: payload.jsonPath?.trim(),
       refreshIntervalMinutes,
     });
 

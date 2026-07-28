@@ -4,6 +4,7 @@ export type SourceRole = "include" | "exclude";
 export type SourceStatus = "pending" | "healthy" | "degraded" | "disabled";
 
 const MAX_SOURCE_BYTES = 2_000_000;
+const MAX_API_SOURCE_BYTES = 20_000_000;
 const PRIVATE_IPV4_PATTERNS = [
   /^0\./,
   /^10\./,
@@ -140,7 +141,60 @@ function flattenJson(value: unknown, output: string[]) {
   }
 }
 
-function extractCandidates(raw: string, format: SourceFormat) {
+function parseCsv(raw: string) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (quoted) {
+      if (character === '"' && raw[index + 1] === '"') {
+        cell += '"';
+        index += 1;
+      } else if (character === '"') {
+        quoted = false;
+      } else {
+        cell += character;
+      }
+    } else if (character === '"') {
+      quoted = true;
+    } else if (character === ",") {
+      row.push(cell.trim());
+      cell = "";
+    } else if (character === "\n") {
+      row.push(cell.trim());
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else if (character !== "\r") {
+      cell += character;
+    }
+  }
+  row.push(cell.trim());
+  rows.push(row);
+  return rows;
+}
+
+function selectJsonPath(value: unknown, path: string) {
+  let values = [value];
+  for (const segment of path.split(".").map((part) => part.trim()).filter(Boolean)) {
+    const wildcard = segment.endsWith("[]");
+    const key = wildcard ? segment.slice(0, -2) : segment;
+    values = values.flatMap((candidate) => {
+      if (!candidate || typeof candidate !== "object" || !(key in candidate)) {
+        return [];
+      }
+      const selected = (candidate as Record<string, unknown>)[key];
+      if (wildcard) return Array.isArray(selected) ? selected : [];
+      return [selected];
+    });
+  }
+  return values;
+}
+
+function extractCandidates(raw: string, format: SourceFormat, jsonPath = "") {
   const detectedFormat =
     format === "auto"
       ? raw.trimStart().startsWith("{") || raw.trimStart().startsWith("[")
@@ -152,16 +206,17 @@ function extractCandidates(raw: string, format: SourceFormat) {
 
   if (detectedFormat === "json") {
     const values: string[] = [];
-    flattenJson(JSON.parse(raw), values);
+    const parsed = JSON.parse(raw);
+    const selected = jsonPath ? selectJsonPath(parsed, jsonPath) : [parsed];
+    if (jsonPath && selected.length === 0) {
+      throw new Error(`JSON path “${jsonPath}” did not match any values.`);
+    }
+    selected.forEach((value) => flattenJson(value, values));
     return values;
   }
 
   if (detectedFormat === "csv") {
-    return raw
-      .split(/\r?\n/)
-      .flatMap((line) =>
-        line.split(",").map((cell) => cell.trim().replace(/^"|"$/g, "")),
-      );
+    return parseCsv(raw).flat();
   }
 
   return raw.split(/\r?\n/);
@@ -171,6 +226,7 @@ export function normalizeEntries(
   raw: string,
   type: EdlType,
   format: SourceFormat,
+  jsonPath = "",
 ) {
   const normalize =
     type === "ip"
@@ -180,7 +236,7 @@ export function normalizeEntries(
         : normalizeUrlEntry;
   const entries = new Set<string>();
 
-  for (const line of extractCandidates(raw, format)) {
+  for (const line of extractCandidates(raw, format, jsonPath)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) {
       continue;
@@ -239,12 +295,20 @@ export function assertSafeSourceUrl(value: string) {
   return url;
 }
 
-export async function downloadSource(urlValue: string) {
+export async function downloadSource(
+  urlValue: string,
+  options: {
+    headers?: Record<string, string>;
+    apiSource?: boolean;
+  } = {},
+) {
   const url = assertSafeSourceUrl(urlValue);
+  const maxBytes = options.apiSource ? MAX_API_SOURCE_BYTES : MAX_SOURCE_BYTES;
   const response = await fetch(url, {
     headers: {
       accept: "text/plain, application/json, text/csv;q=0.9, */*;q=0.5",
       "user-agent": "OpenEDL/0.1 (+https://github.com/openedl)",
+      ...options.headers,
     },
     redirect: "follow",
     signal: AbortSignal.timeout(15_000),
@@ -255,13 +319,17 @@ export async function downloadSource(urlValue: string) {
   }
 
   const declaredSize = Number(response.headers.get("content-length") ?? 0);
-  if (declaredSize > MAX_SOURCE_BYTES) {
-    throw new Error("Source is larger than the 2 MB safety limit.");
+  if (declaredSize > maxBytes) {
+    throw new Error(
+      `Source is larger than the ${options.apiSource ? "20" : "2"} MB safety limit.`,
+    );
   }
 
   const body = await response.text();
-  if (new TextEncoder().encode(body).byteLength > MAX_SOURCE_BYTES) {
-    throw new Error("Source is larger than the 2 MB safety limit.");
+  if (new TextEncoder().encode(body).byteLength > maxBytes) {
+    throw new Error(
+      `Source is larger than the ${options.apiSource ? "20" : "2"} MB safety limit.`,
+    );
   }
 
   return body;

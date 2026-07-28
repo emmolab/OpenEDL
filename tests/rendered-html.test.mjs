@@ -25,6 +25,9 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
   assert.match(setup, /This screen closes permanently/);
   assert.match(setupRoute, /createInitialAdministrator/);
   assert.match(dashboard, /Refresh schedule/);
+  assert.match(dashboard, /CSV \/ manual/);
+  assert.match(dashboard, /Recorded Future/);
+  assert.match(dashboard, /X-RFToken/);
   assert.match(layout, /OpenEDL — Unified External Dynamic Lists/);
   assert.match(layout, /openGraph/);
   assert.match(auth, /code_challenge_method", "S256"/);

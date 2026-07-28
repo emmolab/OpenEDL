@@ -8,6 +8,10 @@ exclusion sources, and publishes a vendor-neutral plain-text URL.
 
 - IP, domain, and URL list types
 - Plain text, CSV, and JSON-value ingestion
+- Manual CSV file uploads with quoted-field parsing
+- Authenticated API sources with encrypted API keys or bearer tokens
+- Recorded Future risk-list preset using `X-RFToken`
+- Optional JSON value paths for nested vendor API responses
 - Include and exclude source rules
 - Last-known-good caching when an upstream feed fails
 - Persistent SQLite source and list configuration
@@ -149,7 +153,7 @@ Microsoft Entra ID, custom OIDC, allowlist, proxy, rotation, and troubleshooting
 instructions.
 
 Set `CONFIG_ENCRYPTION_KEY` to a base64-encoded 32-byte key before adding SSO
-providers from **SSO settings**:
+providers from **SSO settings** or authenticated threat-feed API connections:
 
 ```bash
 openssl rand -base64 32
@@ -160,6 +164,26 @@ the GUI are encrypted with AES-256-GCM before database storage and are never
 returned by the API. Keep the key backed up; changing or losing it makes
 existing GUI-managed client secrets unreadable. Environment-configured
 providers remain supported and appear as read-only entries in the GUI.
+
+### CSV uploads and paid API feeds
+
+Choose **Add source → CSV / manual** to upload a CSV file up to 2 MB. OpenEDL
+scans all cells for values matching the published list type, ignores headers
+and unrelated metadata columns, and supports quoted cells containing commas.
+The source remains editable after upload.
+
+Choose **API connection** for a scheduled, authenticated feed. Generic API
+connections support bearer tokens or a configurable API-key header, plus an
+optional dot path such as `data.results[].entity.name` for nested JSON
+responses. Credentials are encrypted with `CONFIG_ENCRYPTION_KEY`, are never
+returned by the management API, and continue to use last-known-good cached data
+if a refresh fails.
+
+The **Recorded Future** preset selects the official IP, domain, or URL risk-list
+endpoint for the published list type, CSV output, and `X-RFToken`
+authentication. Adjust the `list` query parameter to the risk-rule machine name
+included in your subscription. API response downloads have a 20 MB safety
+limit; unauthenticated remote URLs retain the 2 MB limit.
 
 ### Google SSO
 
@@ -214,5 +238,5 @@ secrets, local development, custom domains, and updates.
 
 ## Current scope
 
-Source request authentication, list creation, audit history, and richer
-JSON-path or STIX/TAXII transforms remain for the next milestone.
+List creation, audit history, pagination, and richer STIX/TAXII transforms
+remain for the next milestone.

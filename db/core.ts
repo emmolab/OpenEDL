@@ -9,9 +9,14 @@ import {
   type SourceRole,
   type SourceStatus,
 } from "../lib/edl";
+import {
+  decryptConfigSecret,
+  encryptConfigSecret,
+} from "../lib/config-secrets";
 
 type RuntimeEnv = {
   DB?: D1Database;
+  CONFIG_ENCRYPTION_KEY?: string;
 };
 
 export type AppTheme = "signal" | "ocean" | "ember" | "midnight";
@@ -34,6 +39,12 @@ export type SourceRow = {
   type: EdlType;
   format: SourceFormat;
   manual_entries: string;
+  api_provider: string | null;
+  api_auth_type: "none" | "bearer" | "header";
+  api_auth_header: string | null;
+  api_secret_ciphertext: string | null;
+  api_secret_iv: string | null;
+  json_path: string;
   enabled: number;
   cached_entries: string;
   entry_count: number;
@@ -82,6 +93,12 @@ async function createSchema(database: D1Database) {
           type TEXT NOT NULL CHECK(type IN ('ip', 'domain', 'url')),
           format TEXT NOT NULL DEFAULT 'auto' CHECK(format IN ('auto', 'text', 'json', 'csv')),
           manual_entries TEXT NOT NULL DEFAULT '',
+          api_provider TEXT,
+          api_auth_type TEXT NOT NULL DEFAULT 'none',
+          api_auth_header TEXT,
+          api_secret_ciphertext TEXT,
+          api_secret_iv TEXT,
+          json_path TEXT NOT NULL DEFAULT '',
           enabled INTEGER NOT NULL DEFAULT 1,
           cached_entries TEXT NOT NULL DEFAULT '[]',
           entry_count INTEGER NOT NULL DEFAULT 0,
@@ -214,6 +231,28 @@ async function createSchema(database: D1Database) {
     await database
       .prepare("ALTER TABLE sources ADD COLUMN next_refresh_at TEXT")
       .run();
+  }
+  const sourceMigrations = [
+    ["api_provider", "ALTER TABLE sources ADD COLUMN api_provider TEXT"],
+    [
+      "api_auth_type",
+      "ALTER TABLE sources ADD COLUMN api_auth_type TEXT NOT NULL DEFAULT 'none'",
+    ],
+    ["api_auth_header", "ALTER TABLE sources ADD COLUMN api_auth_header TEXT"],
+    [
+      "api_secret_ciphertext",
+      "ALTER TABLE sources ADD COLUMN api_secret_ciphertext TEXT",
+    ],
+    ["api_secret_iv", "ALTER TABLE sources ADD COLUMN api_secret_iv TEXT"],
+    [
+      "json_path",
+      "ALTER TABLE sources ADD COLUMN json_path TEXT NOT NULL DEFAULT ''",
+    ],
+  ] as const;
+  for (const [column, statement] of sourceMigrations) {
+    if (!columnNames.has(column)) {
+      await database.prepare(statement).run();
+    }
   }
   await database
     .prepare(
@@ -614,6 +653,11 @@ export async function getDashboard() {
           kind: source.kind,
           type: source.type,
           format: source.format,
+          api_provider: source.api_provider,
+          api_auth_type: source.api_auth_type,
+          api_auth_header: source.api_auth_header,
+          has_api_secret: Boolean(source.api_secret_ciphertext),
+          json_path: source.json_path,
           manual_entries:
             source.kind === "manual" ? source.manual_entries : undefined,
           enabled: Boolean(source.enabled),
@@ -651,6 +695,11 @@ export async function createSource(input: {
   role: SourceRole;
   kind: "remote" | "manual";
   manualEntries?: string;
+  apiProvider?: string;
+  apiAuthType?: "none" | "bearer" | "header";
+  apiAuthHeader?: string;
+  apiSecret?: string;
+  jsonPath?: string;
   refreshIntervalMinutes: number;
 }) {
   await ensureDatabase();
@@ -665,13 +714,22 @@ export async function createSource(input: {
     input.kind === "manual"
       ? normalizeEntries(input.manualEntries ?? "", input.type, input.format)
       : [];
+  const encrypted =
+    input.kind === "remote" && input.apiAuthType !== "none" && input.apiSecret
+      ? await encryptConfigSecret(
+          runtimeEnv.CONFIG_ENCRYPTION_KEY,
+          "edl-api-source",
+          input.apiSecret,
+        )
+      : null;
   const result = await database
     .prepare(
       `INSERT INTO sources (
         name, url, kind, type, format, manual_entries, enabled,
-        cached_entries, entry_count, status, refresh_interval_minutes,
-        next_refresh_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?,
+        api_provider, api_auth_type, api_auth_header, api_secret_ciphertext,
+        api_secret_iv, json_path, cached_entries, entry_count, status,
+        refresh_interval_minutes, next_refresh_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         CASE WHEN ? = 'remote' THEN CURRENT_TIMESTAMP ELSE NULL END)`,
     )
     .bind(
@@ -681,6 +739,12 @@ export async function createSource(input: {
       input.type,
       input.format,
       input.manualEntries ?? "",
+      input.apiProvider || null,
+      input.apiAuthType ?? "none",
+      input.apiAuthHeader || null,
+      encrypted?.ciphertext ?? null,
+      encrypted?.iv ?? null,
+      input.jsonPath?.trim() ?? "",
       JSON.stringify(entries),
       entries.length,
       input.kind === "manual" ? "healthy" : "pending",
@@ -779,11 +843,38 @@ export async function refreshSource(
   if (!source) throw new Error("Source not found.");
 
   try {
+    const apiHeaders: Record<string, string> = {};
+    if (
+      source.kind === "remote" &&
+      source.api_auth_type !== "none" &&
+      source.api_secret_ciphertext &&
+      source.api_secret_iv
+    ) {
+      const secret = await decryptConfigSecret(
+        runtimeEnv.CONFIG_ENCRYPTION_KEY,
+        "edl-api-source",
+        source.api_secret_ciphertext,
+        source.api_secret_iv,
+      );
+      if (source.api_auth_type === "bearer") {
+        apiHeaders.authorization = `Bearer ${secret}`;
+      } else {
+        apiHeaders[source.api_auth_header || "X-API-Key"] = secret;
+      }
+    }
     const raw =
       source.kind === "manual"
         ? source.manual_entries
-        : await downloadSource(source.url ?? "");
-    const entries = normalizeEntries(raw, source.type, source.format);
+        : await downloadSource(source.url ?? "", {
+            headers: apiHeaders,
+            apiSource: Boolean(source.api_provider),
+          });
+    const entries = normalizeEntries(
+      raw,
+      source.type,
+      source.format,
+      source.json_path,
+    );
     if (entries.length === 0) {
       throw new Error("No valid entries matched this source type.");
     }
