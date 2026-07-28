@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { AppearanceSettings } from "./appearance-settings";
 import { InitialSetup } from "./initial-setup";
+import { MaintenanceSettings } from "./maintenance-settings";
 import { ProfileSettings } from "./profile-settings";
 import { SsoSettings } from "./sso-settings";
 import { UserManagement } from "./user-management";
@@ -206,6 +207,7 @@ export function Dashboard() {
     | "users"
     | "sso"
     | "appearance"
+    | "maintenance"
     | "profile"
   >("overview");
 
@@ -864,6 +866,15 @@ export function Dashboard() {
               Appearance
             </button>
           )}
+          {currentUser?.role === "admin" && (
+            <button
+              className={activeView === "maintenance" ? "active" : ""}
+              onClick={() => setActiveView("maintenance")}
+            >
+              <span aria-hidden="true">⌁</span>
+              Maintenance
+            </button>
+          )}
           <button
             className={activeView === "profile" ? "active" : ""}
             onClick={() => setActiveView("profile")}
@@ -939,6 +950,9 @@ export function Dashboard() {
               onEndpointBaseUrlChange={setEndpointBaseUrl}
               setNotice={setNotice}
             />
+          ) : activeView === "maintenance" &&
+            currentUser?.role === "admin" ? (
+            <MaintenanceSettings apiFetch={apiFetch} setNotice={setNotice} />
           ) : activeView === "profile" && currentUser ? (
             <ProfileSettings
               apiFetch={apiFetch}

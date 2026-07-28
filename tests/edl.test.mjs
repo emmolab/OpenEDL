@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   aggregateEntries,
   assertSafeSourceUrl,
+  downloadSource,
   normalizeEntries,
 } from "../lib/edl.ts";
 
@@ -109,4 +110,22 @@ test("rejects local and metadata source URLs", () => {
     assertSafeSourceUrl("https://example.com/feed.txt").hostname,
     "example.com",
   );
+});
+
+test("enforces a caller-supplied source download limit", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response("not read", {
+      headers: { "content-length": "2000000" },
+    });
+  try {
+    await assert.rejects(
+      downloadSource("https://example.com/feed.csv", {
+        maxBytes: 1_000_000,
+      }),
+      /1 MB safety limit/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

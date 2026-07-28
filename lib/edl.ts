@@ -3,8 +3,7 @@ export type SourceFormat = "auto" | "text" | "json" | "csv";
 export type SourceRole = "include" | "exclude";
 export type SourceStatus = "pending" | "healthy" | "degraded" | "disabled";
 
-const MAX_SOURCE_BYTES = 2_000_000;
-const MAX_API_SOURCE_BYTES = 20_000_000;
+const DEFAULT_MAX_SOURCE_BYTES = 2_000_000;
 const PRIVATE_IPV4_PATTERNS = [
   /^0\./,
   /^10\./,
@@ -299,11 +298,11 @@ export async function downloadSource(
   urlValue: string,
   options: {
     headers?: Record<string, string>;
-    apiSource?: boolean;
+    maxBytes?: number;
   } = {},
 ) {
   const url = assertSafeSourceUrl(urlValue);
-  const maxBytes = options.apiSource ? MAX_API_SOURCE_BYTES : MAX_SOURCE_BYTES;
+  const maxBytes = options.maxBytes ?? DEFAULT_MAX_SOURCE_BYTES;
   const response = await fetch(url, {
     headers: {
       accept: "text/plain, application/json, text/csv;q=0.9, */*;q=0.5",
@@ -321,14 +320,14 @@ export async function downloadSource(
   const declaredSize = Number(response.headers.get("content-length") ?? 0);
   if (declaredSize > maxBytes) {
     throw new Error(
-      `Source is larger than the ${options.apiSource ? "20" : "2"} MB safety limit.`,
+      `Source is larger than the ${maxBytes / 1_000_000} MB safety limit.`,
     );
   }
 
   const body = await response.text();
   if (new TextEncoder().encode(body).byteLength > maxBytes) {
     throw new Error(
-      `Source is larger than the ${options.apiSource ? "20" : "2"} MB safety limit.`,
+      `Source is larger than the ${maxBytes / 1_000_000} MB safety limit.`,
     );
   }
 

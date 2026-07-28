@@ -21,6 +21,23 @@ type RuntimeEnv = {
 
 export type AppTheme = "signal" | "ocean" | "ember" | "midnight";
 
+export type SourceSafetyLimits = {
+  remoteSourceMaxMb: number;
+  apiSourceMaxMb: number;
+};
+
+export type DatabaseStats = {
+  available: boolean;
+  pageCount: number;
+  pageSize: number;
+  freePageCount: number;
+  sizeBytes: number;
+  reclaimableBytes: number;
+};
+
+const DEFAULT_REMOTE_SOURCE_MAX_MB = 2;
+const DEFAULT_API_SOURCE_MAX_MB = 20;
+
 type ListRow = {
   id: number;
   name: string;
@@ -263,6 +280,18 @@ async function createSchema(database: D1Database) {
     .prepare(
       `INSERT OR IGNORE INTO app_settings (key, value)
        VALUES ('endpoint_base_url', '')`,
+    )
+    .run();
+  await database
+    .prepare(
+      `INSERT OR IGNORE INTO app_settings (key, value)
+       VALUES ('remote_source_max_mb', '2')`,
+    )
+    .run();
+  await database
+    .prepare(
+      `INSERT OR IGNORE INTO app_settings (key, value)
+       VALUES ('api_source_max_mb', '20')`,
     )
     .run();
   await database
@@ -566,6 +595,135 @@ export async function updateEndpointBaseUrl(value: string) {
     .run();
 }
 
+export async function getSourceSafetyLimits(
+  database = getD1(),
+  initialize = true,
+): Promise<SourceSafetyLimits> {
+  if (initialize) await ensureDatabase(database);
+  const { results } = await database
+    .prepare(
+      `SELECT key, value FROM app_settings
+       WHERE key IN ('remote_source_max_mb', 'api_source_max_mb')`,
+    )
+    .all<{ key: string; value: string }>();
+  const settings = new Map(results.map((row) => [row.key, Number(row.value)]));
+  const remoteSourceMaxMb = settings.get("remote_source_max_mb");
+  const apiSourceMaxMb = settings.get("api_source_max_mb");
+  return {
+    remoteSourceMaxMb:
+      remoteSourceMaxMb &&
+      Number.isInteger(remoteSourceMaxMb) &&
+      remoteSourceMaxMb >= 1
+        ? remoteSourceMaxMb
+        : DEFAULT_REMOTE_SOURCE_MAX_MB,
+    apiSourceMaxMb:
+      apiSourceMaxMb &&
+      Number.isInteger(apiSourceMaxMb) &&
+      apiSourceMaxMb >= 1
+        ? apiSourceMaxMb
+        : DEFAULT_API_SOURCE_MAX_MB,
+  };
+}
+
+export async function updateSourceSafetyLimits(input: SourceSafetyLimits) {
+  if (
+    !Number.isInteger(input.remoteSourceMaxMb) ||
+    input.remoteSourceMaxMb < 1 ||
+    input.remoteSourceMaxMb > 100
+  ) {
+    throw new Error("Remote URL limit must be between 1 and 100 MB.");
+  }
+  if (
+    !Number.isInteger(input.apiSourceMaxMb) ||
+    input.apiSourceMaxMb < 1 ||
+    input.apiSourceMaxMb > 500
+  ) {
+    throw new Error("Authenticated API limit must be between 1 and 500 MB.");
+  }
+  await ensureDatabase();
+  await getD1().batch([
+    getD1()
+      .prepare(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('remote_source_max_mb', ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(key) DO UPDATE SET
+           value = excluded.value,
+           updated_at = CURRENT_TIMESTAMP`,
+      )
+      .bind(String(input.remoteSourceMaxMb)),
+    getD1()
+      .prepare(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('api_source_max_mb', ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(key) DO UPDATE SET
+           value = excluded.value,
+           updated_at = CURRENT_TIMESTAMP`,
+      )
+      .bind(String(input.apiSourceMaxMb)),
+  ]);
+}
+
+async function readDatabaseStats(database: D1Database): Promise<DatabaseStats> {
+  try {
+    const [pageCountRow, pageSizeRow, freePageRow] = await Promise.all([
+      database.prepare("PRAGMA page_count").first<Record<string, number>>(),
+      database.prepare("PRAGMA page_size").first<Record<string, number>>(),
+      database.prepare("PRAGMA freelist_count").first<Record<string, number>>(),
+    ]);
+    const pageCount = Number(pageCountRow?.page_count ?? 0);
+    const pageSize = Number(pageSizeRow?.page_size ?? 0);
+    const freePageCount = Number(freePageRow?.freelist_count ?? 0);
+    return {
+      available: true,
+      pageCount,
+      pageSize,
+      freePageCount,
+      sizeBytes: pageCount * pageSize,
+      reclaimableBytes: freePageCount * pageSize,
+    };
+  } catch {
+    return {
+      available: false,
+      pageCount: 0,
+      pageSize: 0,
+      freePageCount: 0,
+      sizeBytes: 0,
+      reclaimableBytes: 0,
+    };
+  }
+}
+
+export async function getDatabaseStats() {
+  await ensureDatabase();
+  return readDatabaseStats(getD1());
+}
+
+export async function vacuumDatabase() {
+  await ensureDatabase();
+  const database = getD1();
+  const before = await readDatabaseStats(database);
+  try {
+    await database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } catch {
+    // Managed SQLite-compatible services may not expose WAL controls.
+  }
+  try {
+    await database.exec("VACUUM");
+  } catch (error) {
+    throw new Error(
+      error instanceof Error
+        ? `Database compaction is unavailable: ${error.message}`
+        : "Database compaction is unavailable on this storage backend.",
+    );
+  }
+  const after = await readDatabaseStats(database);
+  return {
+    before,
+    after,
+    reclaimedBytes: Math.max(0, before.sizeBytes - after.sizeBytes),
+  };
+}
+
 export async function getList(idOrSlug: number | string) {
   await ensureDatabase();
   return typeof idOrSlug === "number"
@@ -843,6 +1001,7 @@ export async function refreshSource(
   if (!source) throw new Error("Source not found.");
 
   try {
+    const limits = await getSourceSafetyLimits(database, false);
     const apiHeaders: Record<string, string> = {};
     if (
       source.kind === "remote" &&
@@ -867,7 +1026,10 @@ export async function refreshSource(
         ? source.manual_entries
         : await downloadSource(source.url ?? "", {
             headers: apiHeaders,
-            apiSource: Boolean(source.api_provider),
+            maxBytes:
+              (source.api_provider
+                ? limits.apiSourceMaxMb
+                : limits.remoteSourceMaxMb) * 1_000_000,
           });
     const entries = normalizeEntries(
       raw,

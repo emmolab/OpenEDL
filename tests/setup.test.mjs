@@ -84,6 +84,10 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
 
   const unauthorizedDashboard = await fetch(`${baseUrl}/api/dashboard`);
   assert.equal(unauthorizedDashboard.status, 401);
+  const unauthorizedMaintenance = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+  );
+  assert.equal(unauthorizedMaintenance.status, 401);
 
   const initialStatus = await fetch(`${baseUrl}/api/setup`);
   assert.equal(initialStatus.status, 200);
@@ -151,4 +155,59 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
     headers: { cookie },
   });
   assert.equal(authenticatedDashboard.status, 200);
+
+  const maintenanceResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    { headers: { cookie } },
+  );
+  assert.equal(maintenanceResponse.status, 200);
+  const maintenance = await maintenanceResponse.json();
+  assert.deepEqual(maintenance.limits, {
+    remoteSourceMaxMb: 2,
+    apiSourceMaxMb: 20,
+  });
+  assert.equal(maintenance.database.available, true);
+  assert.ok(maintenance.database.sizeBytes > 0);
+  assert.ok(maintenance.database.pageCount > 0);
+
+  const updateLimitsResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    {
+      method: "PATCH",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        remoteSourceMaxMb: 8,
+        apiSourceMaxMb: 250,
+      }),
+    },
+  );
+  assert.equal(updateLimitsResponse.status, 200);
+  assert.deepEqual((await updateLimitsResponse.json()).limits, {
+    remoteSourceMaxMb: 8,
+    apiSourceMaxMb: 250,
+  });
+
+  const invalidLimitsResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    {
+      method: "PATCH",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        remoteSourceMaxMb: 8,
+        apiSourceMaxMb: 501,
+      }),
+    },
+  );
+  assert.equal(invalidLimitsResponse.status, 400);
+
+  const vacuumResponse = await fetch(`${baseUrl}/api/settings/maintenance`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ action: "vacuum" }),
+  });
+  assert.equal(vacuumResponse.status, 200);
+  const vacuum = await vacuumResponse.json();
+  assert.ok(vacuum.before.sizeBytes > 0);
+  assert.ok(vacuum.after.sizeBytes > 0);
+  assert.ok(vacuum.reclaimedBytes >= 0);
 });

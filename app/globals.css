@@ -2037,6 +2037,112 @@ button:disabled {
   padding-top: 17px;
 }
 
+.maintenance-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 20px;
+}
+
+.maintenance-panel {
+  overflow: hidden;
+}
+
+.maintenance-form {
+  display: grid;
+  gap: 20px;
+  border-top: 1px solid var(--line);
+  padding: 24px;
+}
+
+.unit-field {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  overflow: hidden;
+  border: 1px solid #cfd7d1;
+  border-radius: 10px;
+  background: var(--control-bg);
+}
+
+.unit-field input {
+  border: 0;
+  border-radius: 0;
+}
+
+.unit-field span {
+  display: grid;
+  min-width: 52px;
+  place-items: center;
+  border-left: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--muted);
+  font: 700 9px/1 var(--mono);
+}
+
+.database-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.database-stats div {
+  min-width: 0;
+  padding: 22px 18px;
+}
+
+.database-stats div + div {
+  border-left: 1px solid var(--line);
+}
+
+.database-stats span,
+.database-stats strong {
+  display: block;
+}
+
+.database-stats span {
+  min-height: 25px;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.database-stats strong {
+  overflow: hidden;
+  margin-top: 9px;
+  font: 700 15px/1 var(--mono);
+  text-overflow: ellipsis;
+}
+
+.maintenance-action {
+  display: grid;
+  gap: 18px;
+  padding: 24px;
+}
+
+.maintenance-action p {
+  color: var(--muted);
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.65;
+}
+
+.maintenance-action button {
+  justify-self: start;
+}
+
+.settings-error {
+  border: 1px solid #f0c9c5;
+  border-radius: 10px;
+  background: #fff5f4;
+  color: #9a4c45;
+  margin: 0 0 20px;
+  padding: 12px 14px;
+  font-size: 10px;
+}
+
 .slug-field {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -2387,6 +2493,10 @@ button:disabled {
   }
 
   .appearance-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .maintenance-grid {
     grid-template-columns: 1fr;
   }
 

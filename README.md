@@ -28,6 +28,8 @@ exclusion sources, and publishes a vendor-neutral plain-text URL.
 - HttpOnly database-backed management sessions with PKCE and nonce validation
 - Optional bearer-token recovery access for the management API
 - Per-source refresh schedules from five minutes to weekly
+- Administrator-configurable remote and authenticated API response limits
+- Administrator portal database statistics and SQLite VACUUM controls
 - Built-in container scheduling, Cloudflare scheduled-handler, and external cron support
 - Basic SSRF and response-size protections for remote sources
 
@@ -183,7 +185,19 @@ The **Recorded Future** preset selects the official IP, domain, or URL risk-list
 endpoint for the published list type, CSV output, and `X-RFToken`
 authentication. Adjust the `list` query parameter to the risk-rule machine name
 included in your subscription. API response downloads have a 20 MB safety
-limit; unauthenticated remote URLs retain the 2 MB limit.
+limit. Administrators can raise the authenticated API ceiling up to 500 MB from
+**Maintenance** for large licensed lists; unauthenticated remote URL limits are
+independently configurable up to 100 MB.
+
+### Storage maintenance
+
+Administrators can open **Maintenance** to inspect the current database size,
+free-page count, and immediately reclaimable SQLite space. **Run database
+VACUUM** checkpoints the local write-ahead log when supported and rebuilds the
+database so unused pages can be returned to disk. VACUUM can temporarily block
+writes, so back up production data and run it during a quiet period. Cloudflare
+D1 is managed storage and may reject manual VACUUM operations; OpenEDL reports
+that backend error without changing data.
 
 ### Google SSO
 

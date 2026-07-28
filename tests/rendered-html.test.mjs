@@ -3,8 +3,18 @@ import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("ships the OpenEDL dashboard instead of starter content", async () => {
-  const [page, dashboard, setup, setupRoute, layout, packageJson, auth, worker] =
-    await Promise.all([
+  const [
+    page,
+    dashboard,
+    setup,
+    setupRoute,
+    layout,
+    packageJson,
+    auth,
+    worker,
+    maintenance,
+    maintenanceRoute,
+  ] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/dashboard.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/initial-setup.tsx", import.meta.url), "utf8"),
@@ -13,7 +23,12 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
-    ]);
+    readFile(new URL("../app/maintenance-settings.tsx", import.meta.url), "utf8"),
+    readFile(
+      new URL("../app/api/settings/maintenance/route.ts", import.meta.url),
+      "utf8",
+    ),
+  ]);
 
   assert.match(page, /<Dashboard \/>/);
   assert.match(dashboard, /Threat feed,/);
@@ -28,6 +43,11 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
   assert.match(dashboard, /CSV \/ manual/);
   assert.match(dashboard, /Recorded Future/);
   assert.match(dashboard, /X-RFToken/);
+  assert.match(dashboard, /Maintenance/);
+  assert.match(maintenance, /Run database VACUUM/);
+  assert.match(maintenance, /Authenticated API feed limit/);
+  assert.match(maintenanceRoute, /Administrator access is required/);
+  assert.match(maintenanceRoute, /vacuumDatabase/);
   assert.match(layout, /OpenEDL — Unified External Dynamic Lists/);
   assert.match(layout, /openGraph/);
   assert.match(auth, /code_challenge_method", "S256"/);
