@@ -1,15 +1,12 @@
 import {
   getAppTheme,
-  getEndpointBaseUrl,
   updateAppTheme,
-  updateEndpointBaseUrl,
 } from "../../../../db/core";
 import { getManagementIdentity } from "../../../../lib/auth";
 
 export async function GET() {
   return Response.json({
     theme: await getAppTheme(),
-    endpointBaseUrl: await getEndpointBaseUrl(),
   });
 }
 
@@ -27,18 +24,13 @@ export async function PATCH(request: Request) {
   try {
     const payload = (await request.json()) as {
       theme?: string;
-      endpointBaseUrl?: string;
     };
-    if (payload.theme === undefined && payload.endpointBaseUrl === undefined) {
+    if (payload.theme === undefined) {
       throw new Error("No appearance changes were supplied.");
     }
-    if (payload.theme !== undefined) await updateAppTheme(payload.theme);
-    if (payload.endpointBaseUrl !== undefined) {
-      await updateEndpointBaseUrl(payload.endpointBaseUrl);
-    }
+    await updateAppTheme(payload.theme);
     return Response.json({
       theme: await getAppTheme(),
-      endpointBaseUrl: await getEndpointBaseUrl(),
     });
   } catch (error) {
     return Response.json(

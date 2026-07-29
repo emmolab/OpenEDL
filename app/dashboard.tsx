@@ -175,7 +175,6 @@ export function Dashboard() {
       ? saved
       : "signal";
   });
-  const [endpointBaseUrl, setEndpointBaseUrl] = useState("");
   const [localEmail, setLocalEmail] = useState("");
   const [localPassword, setLocalPassword] = useState("");
   const [isSigningIn, setIsSigningIn] = useState(false);
@@ -183,6 +182,7 @@ export function Dashboard() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [busySource, setBusySource] = useState<number | null>(null);
   const [showAddSource, setShowAddSource] = useState(false);
+  const [editingRemote, setEditingRemote] = useState<Source | null>(null);
   const [editingManual, setEditingManual] = useState<Source | null>(null);
   const [editingList, setEditingList] = useState<PublishedList | null>(null);
   const [manualName, setManualName] = useState("");
@@ -300,14 +300,10 @@ export function Dashboard() {
             async (response) =>
               (await response.json()) as {
                 theme?: AppTheme;
-                endpointBaseUrl?: string;
               },
           )
           .then((payload) => {
             if (payload.theme) setAppTheme(payload.theme);
-            if (payload.endpointBaseUrl !== undefined) {
-              setEndpointBaseUrl(payload.endpointBaseUrl);
-            }
           }),
       ]);
     });
@@ -325,9 +321,7 @@ export function Dashboard() {
   }, [appTheme]);
 
   const list = data?.lists[0] ?? null;
-  const endpoint = list
-    ? `${endpointBaseUrl || origin}/edl/${list.slug}`
-    : "";
+  const endpoint = list ? `${origin}/edl/${list.slug}` : "";
   const activeSources =
     list?.sources.filter((source) => source.enabled).length ?? 0;
   const sourceRows = useMemo(() => list?.sources ?? [], [list]);
@@ -454,6 +448,45 @@ export function Dashboard() {
     setFormError("");
   }
 
+  function openAddSource() {
+    setEditingRemote(null);
+    setForm(emptyForm);
+    setFormError("");
+    setShowAddSource(true);
+  }
+
+  function editRemoteSource(source: Source) {
+    const isApi = source.api_auth_type !== "none" || Boolean(source.api_provider);
+    setEditingRemote(source);
+    setForm({
+      name: source.name,
+      kind: isApi ? "api" : "remote",
+      url: source.url ?? "",
+      manualEntries: "",
+      format: source.format,
+      role: source.role,
+      apiProvider:
+        source.api_provider === "recorded_future"
+          ? "recorded_future"
+          : "generic",
+      apiAuthType:
+        source.api_auth_type === "header" ? "header" : "bearer",
+      apiAuthHeader: source.api_auth_header ?? "X-API-Key",
+      apiSecret: "",
+      jsonPath: source.json_path,
+      refreshIntervalMinutes: source.refresh_interval_minutes,
+    });
+    setFormError("");
+    setShowAddSource(true);
+  }
+
+  function closeSourceForm() {
+    setShowAddSource(false);
+    setEditingRemote(null);
+    setForm(emptyForm);
+    setFormError("");
+  }
+
   async function saveManualSource(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!editingManual) return;
@@ -533,22 +566,27 @@ export function Dashboard() {
     setFormError("");
 
     try {
-      const response = await apiFetch("/api/sources", {
-        method: "POST",
-        body: JSON.stringify({
-          listId: list.id,
-          type: list.type,
-          ...form,
-          kind: form.kind === "api" ? "remote" : form.kind,
-          apiProvider: form.kind === "api" ? form.apiProvider : "",
-          apiAuthType: form.kind === "api" ? form.apiAuthType : "none",
-          apiSecret: form.kind === "api" ? form.apiSecret : "",
-          jsonPath:
-            form.kind === "api" && form.format === "json"
-              ? form.jsonPath
-              : "",
-        }),
-      });
+      const response = await apiFetch(
+        editingRemote ? `/api/sources/${editingRemote.id}` : "/api/sources",
+        {
+          method: editingRemote ? "PATCH" : "POST",
+          body: JSON.stringify({
+            ...(editingRemote ? {} : { listId: list.id, type: list.type }),
+            ...form,
+            kind: form.kind === "api" ? "remote" : form.kind,
+            apiProvider: form.kind === "api" ? form.apiProvider : "",
+            apiAuthType: form.kind === "api" ? form.apiAuthType : "none",
+            apiSecret:
+              form.kind === "api" && form.apiSecret
+                ? form.apiSecret
+                : undefined,
+            jsonPath:
+              form.kind === "api" && form.format === "json"
+                ? form.jsonPath
+                : "",
+          }),
+        },
+      );
       const payload = (await response.json()) as {
         error?: string;
         refresh?: { ok?: boolean; error?: string };
@@ -559,15 +597,22 @@ export function Dashboard() {
 
       setForm(emptyForm);
       setShowAddSource(false);
+      setEditingRemote(null);
       setNotice(
-        payload.refresh?.ok === false
-          ? "Source added. Its first refresh failed, so it is marked degraded."
-          : "Source added and validated.",
+        editingRemote
+          ? "Source updated. Refresh it now to validate the new configuration, or leave it queued for the scheduler."
+          : payload.refresh?.ok === false
+            ? "Source added. Its first refresh failed, so it is marked degraded."
+            : "Source added and validated.",
       );
       await loadDashboard();
     } catch (error) {
       setFormError(
-        error instanceof Error ? error.message : "Unable to add source.",
+        error instanceof Error
+          ? error.message
+          : editingRemote
+            ? "Unable to update source."
+            : "Unable to add source.",
       );
     }
   }
@@ -945,9 +990,7 @@ export function Dashboard() {
             <AppearanceSettings
               apiFetch={apiFetch}
               theme={appTheme}
-              endpointBaseUrl={endpointBaseUrl}
               onThemeChange={setAppTheme}
-              onEndpointBaseUrlChange={setEndpointBaseUrl}
               setNotice={setNotice}
             />
           ) : activeView === "maintenance" &&
@@ -978,7 +1021,7 @@ export function Dashboard() {
                 <button
                   className="primary-button"
                   type="button"
-                  onClick={() => setShowAddSource(true)}
+                  onClick={openAddSource}
                 >
                   <span aria-hidden="true">+</span>
                   Add source
@@ -1161,12 +1204,22 @@ export function Dashboard() {
                                     ↻
                                   </span>
                                 </button>
-                                {source.kind === "manual" && (
+                                {source.kind === "manual" ? (
                                   <button
                                     type="button"
                                     aria-label={`Edit ${source.name}`}
                                     title="Edit manual source"
                                     onClick={() => editManualSource(source)}
+                                    disabled={busySource === source.id}
+                                  >
+                                    ✎
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    aria-label={`Edit ${source.name}`}
+                                    title="Edit remote or API source"
+                                    onClick={() => editRemoteSource(source)}
                                     disabled={busySource === source.id}
                                   >
                                     ✎
@@ -1193,7 +1246,7 @@ export function Dashboard() {
                           <button
                             type="button"
                             className="add-row"
-                            onClick={() => setShowAddSource(true)}
+                            onClick={openAddSource}
                           >
                             <span>+</span>
                             Add another source
@@ -1260,7 +1313,7 @@ export function Dashboard() {
           className="drawer-backdrop"
           role="presentation"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setShowAddSource(false);
+            if (event.target === event.currentTarget) closeSourceForm();
           }}
         >
           <aside
@@ -1272,12 +1325,14 @@ export function Dashboard() {
             <div className="drawer-heading">
               <div>
                 <p className="eyebrow">Connect intelligence</p>
-                <h2 id="source-drawer-title">Add a source</h2>
+                <h2 id="source-drawer-title">
+                  {editingRemote ? "Edit source" : "Add a source"}
+                </h2>
               </div>
               <button
                 type="button"
                 aria-label="Close source form"
-                onClick={() => setShowAddSource(false)}
+                onClick={closeSourceForm}
               >
                 ×
               </button>
@@ -1310,6 +1365,12 @@ export function Dashboard() {
                   type="button"
                   className={form.kind === "manual" ? "active" : ""}
                   onClick={() => setForm({ ...form, kind: "manual" })}
+                  disabled={Boolean(editingRemote)}
+                  title={
+                    editingRemote
+                      ? "Existing remote sources cannot be converted to manual sources."
+                      : undefined
+                  }
                 >
                   CSV / manual
                 </button>
@@ -1455,11 +1516,12 @@ export function Dashboard() {
                         setForm({ ...form, apiSecret: event.target.value })
                       }
                       autoComplete="new-password"
-                      required
+                      required={!editingRemote || !editingRemote.has_api_secret}
                     />
                     <small>
-                      Encrypted before storage. The credential is never returned
-                      by the API.
+                      {editingRemote && editingRemote.has_api_secret
+                        ? "Leave blank to keep the existing encrypted credential."
+                        : "Encrypted before storage. The credential is never returned by the API."}
                     </small>
                   </div>
                 </>
@@ -1559,12 +1621,12 @@ export function Dashboard() {
                 <button
                   type="button"
                   className="secondary-button"
-                  onClick={() => setShowAddSource(false)}
+                  onClick={closeSourceForm}
                 >
                   Cancel
                 </button>
                 <button className="primary-button" type="submit">
-                  Add & validate
+                  {editingRemote ? "Save & validate" : "Add & validate"}
                 </button>
               </div>
             </form>

@@ -2021,22 +2021,6 @@ button:disabled {
   color: var(--ink);
 }
 
-.public-url-panel {
-  overflow: hidden;
-  margin-top: 20px;
-}
-
-.public-url-form {
-  display: grid;
-  gap: 17px;
-  border-top: 1px solid var(--line);
-  padding: 24px;
-}
-
-.public-url-form .profile-actions {
-  padding-top: 17px;
-}
-
 .maintenance-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

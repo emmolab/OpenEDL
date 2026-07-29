@@ -1,15 +1,11 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-
 type AppTheme = "signal" | "ocean" | "ember" | "midnight";
 
 type Props = {
   apiFetch: (path: string, init?: RequestInit) => Promise<Response>;
   theme: AppTheme;
-  endpointBaseUrl: string;
   onThemeChange: (theme: AppTheme) => void;
-  onEndpointBaseUrlChange: (value: string) => void;
   setNotice: (message: string) => void;
 };
 
@@ -43,13 +39,9 @@ const themes = [
 export function AppearanceSettings({
   apiFetch,
   theme,
-  endpointBaseUrl,
   onThemeChange,
-  onEndpointBaseUrlChange,
   setNotice,
 }: Props) {
-  const [baseUrlDraft, setBaseUrlDraft] = useState(endpointBaseUrl);
-  const [baseUrlError, setBaseUrlError] = useState("");
   async function selectTheme(nextTheme: AppTheme) {
     const previousTheme = theme;
     onThemeChange(nextTheme);
@@ -73,33 +65,6 @@ export function AppearanceSettings({
         error instanceof Error
           ? error.message
           : "Unable to update application theme.",
-      );
-    }
-  }
-
-  async function saveBaseUrl(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setBaseUrlError("");
-    try {
-      const response = await apiFetch("/api/settings/appearance", {
-        method: "PATCH",
-        body: JSON.stringify({ endpointBaseUrl: baseUrlDraft }),
-      });
-      const payload = (await response.json()) as {
-        endpointBaseUrl?: string;
-        error?: string;
-      };
-      if (!response.ok || payload.endpointBaseUrl === undefined) {
-        throw new Error(payload.error ?? "Unable to update public endpoint URL.");
-      }
-      setBaseUrlDraft(payload.endpointBaseUrl);
-      onEndpointBaseUrlChange(payload.endpointBaseUrl);
-      setNotice("Public endpoint base URL updated.");
-    } catch (error) {
-      setBaseUrlError(
-        error instanceof Error
-          ? error.message
-          : "Unable to update public endpoint URL.",
       );
     }
   }
@@ -150,36 +115,6 @@ export function AppearanceSettings({
         </div>
       </section>
 
-      <section className="panel public-url-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Reverse proxy</p>
-            <h2>Public endpoint base URL</h2>
-          </div>
-        </div>
-        <form className="public-url-form" onSubmit={saveBaseUrl}>
-          <div className="field">
-            <label htmlFor="endpoint-base-url">Public origin</label>
-            <input
-              id="endpoint-base-url"
-              type="url"
-              value={baseUrlDraft}
-              onChange={(event) => setBaseUrlDraft(event.target.value)}
-              placeholder="https://edl.example.com"
-            />
-            <small>
-              Used when displaying and copying published EDL URLs. Leave blank
-              to use the browser&apos;s current origin.
-            </small>
-          </div>
-          {baseUrlError && <p className="form-error">{baseUrlError}</p>}
-          <div className="profile-actions">
-            <button className="primary-button" type="submit">
-              Save public URL
-            </button>
-          </div>
-        </form>
-      </section>
     </>
   );
 }

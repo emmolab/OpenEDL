@@ -13,6 +13,7 @@ import {
   decryptConfigSecret,
   encryptConfigSecret,
 } from "../lib/config-secrets";
+import { logError, logInfo } from "../lib/logging";
 
 type RuntimeEnv = {
   DB?: D1Database;
@@ -274,12 +275,6 @@ async function createSchema(database: D1Database) {
   await database
     .prepare(
       "CREATE INDEX IF NOT EXISTS sources_next_refresh_idx ON sources(next_refresh_at)",
-    )
-    .run();
-  await database
-    .prepare(
-      `INSERT OR IGNORE INTO app_settings (key, value)
-       VALUES ('endpoint_base_url', '')`,
     )
     .run();
   await database
@@ -549,49 +544,6 @@ export async function updateAppTheme(theme: string) {
          updated_at = CURRENT_TIMESTAMP`,
     )
     .bind(theme)
-    .run();
-}
-
-export async function getEndpointBaseUrl() {
-  await ensureDatabase();
-  const row = await getD1()
-    .prepare("SELECT value FROM app_settings WHERE key = 'endpoint_base_url'")
-    .first<{ value: string }>();
-  return row?.value ?? "";
-}
-
-export async function updateEndpointBaseUrl(value: string) {
-  const normalized = value.trim().replace(/\/+$/, "");
-  if (normalized) {
-    let url: URL;
-    try {
-      url = new URL(normalized);
-    } catch {
-      throw new Error("Enter a valid public HTTP or HTTPS URL.");
-    }
-    if (
-      !["http:", "https:"].includes(url.protocol) ||
-      url.username ||
-      url.password ||
-      (url.pathname !== "/" && url.pathname !== "") ||
-      url.search ||
-      url.hash
-    ) {
-      throw new Error(
-        "Public endpoint base URL must be an HTTP or HTTPS origin without a path.",
-      );
-    }
-  }
-  await ensureDatabase();
-  await getD1()
-    .prepare(
-      `INSERT INTO app_settings (key, value, updated_at)
-       VALUES ('endpoint_base_url', ?, CURRENT_TIMESTAMP)
-       ON CONFLICT(key) DO UPDATE SET
-         value = excluded.value,
-         updated_at = CURRENT_TIMESTAMP`,
-    )
-    .bind(normalized)
     .run();
 }
 
@@ -919,12 +871,115 @@ export async function createSource(input: {
     .bind(input.listId, sourceId, input.role)
     .run();
 
+  logInfo("source.created", {
+    sourceId,
+    listId: input.listId,
+    kind: input.kind,
+    authenticated: input.apiAuthType !== "none",
+  });
   return sourceId;
 }
 
 export async function deleteSource(sourceId: number) {
   await ensureDatabase();
-  await getD1().prepare("DELETE FROM sources WHERE id = ?").bind(sourceId).run();
+  const result = await getD1()
+    .prepare("DELETE FROM sources WHERE id = ?")
+    .bind(sourceId)
+    .run();
+  logInfo("source.deleted", {
+    sourceId,
+    deleted: (result.meta.changes ?? 0) > 0,
+  });
+}
+
+export async function updateRemoteSource(
+  sourceId: number,
+  input: {
+    name: string;
+    url: string;
+    format: SourceFormat;
+    role: SourceRole;
+    apiProvider?: string;
+    apiAuthType: "none" | "bearer" | "header";
+    apiAuthHeader?: string;
+    apiSecret?: string;
+    jsonPath?: string;
+    refreshIntervalMinutes: number;
+  },
+) {
+  await ensureDatabase();
+  const database = getD1();
+  const source = await database
+    .prepare("SELECT * FROM sources WHERE id = ?")
+    .bind(sourceId)
+    .first<SourceRow>();
+  if (!source) throw new Error("Source not found.");
+  if (source.kind !== "remote") {
+    throw new Error("Only remote and API sources can use this editor.");
+  }
+  if (
+    input.apiAuthType !== "none" &&
+    !input.apiSecret &&
+    !source.api_secret_ciphertext
+  ) {
+    throw new Error("Enter the API token or key.");
+  }
+
+  const encrypted = input.apiSecret
+    ? await encryptConfigSecret(
+        runtimeEnv.CONFIG_ENCRYPTION_KEY,
+        "edl-api-source",
+        input.apiSecret,
+      )
+    : null;
+  const clearSecret = input.apiAuthType === "none";
+
+  await database.batch([
+    database
+      .prepare(
+        `UPDATE sources SET
+          name = ?, url = ?, format = ?, api_provider = ?,
+          api_auth_type = ?, api_auth_header = ?,
+          api_secret_ciphertext = CASE
+            WHEN ? = 1 THEN NULL
+            ELSE COALESCE(?, api_secret_ciphertext)
+          END,
+          api_secret_iv = CASE
+            WHEN ? = 1 THEN NULL
+            ELSE COALESCE(?, api_secret_iv)
+          END,
+          json_path = ?, refresh_interval_minutes = ?,
+          next_refresh_at = CURRENT_TIMESTAMP,
+          status = CASE WHEN enabled = 1 THEN 'pending' ELSE 'disabled' END,
+          last_error = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+      )
+      .bind(
+        input.name,
+        input.url,
+        input.format,
+        input.apiProvider || null,
+        input.apiAuthType,
+        input.apiAuthType === "header" ? input.apiAuthHeader || null : null,
+        clearSecret ? 1 : 0,
+        encrypted?.ciphertext ?? null,
+        clearSecret ? 1 : 0,
+        encrypted?.iv ?? null,
+        input.jsonPath?.trim() ?? "",
+        input.refreshIntervalMinutes,
+        sourceId,
+      ),
+    database
+      .prepare("UPDATE list_sources SET role = ? WHERE source_id = ?")
+      .bind(input.role, sourceId),
+  ]);
+
+  logInfo("source.updated", {
+    sourceId,
+    kind: input.apiAuthType === "none" ? "remote" : "api",
+    credentialReplaced: Boolean(input.apiSecret),
+    refreshIntervalMinutes: input.refreshIntervalMinutes,
+  });
 }
 
 export async function updateSourceSchedule(
@@ -999,6 +1054,11 @@ export async function refreshSource(
     .bind(sourceId)
     .first<SourceRow>();
   if (!source) throw new Error("Source not found.");
+  const startedAt = Date.now();
+  logInfo("source.refresh.started", {
+    sourceId,
+    kind: source.api_provider ? "api" : source.kind,
+  });
 
   try {
     const limits = await getSourceSafetyLimits(database, false);
@@ -1057,6 +1117,11 @@ export async function refreshSource(
       )
       .bind(JSON.stringify(entries), entries.length, sourceId)
       .run();
+    logInfo("source.refresh.completed", {
+      sourceId,
+      entries: entries.length,
+      durationMs: Date.now() - startedAt,
+    });
     return { ok: true, sourceId, entryCount: entries.length };
   } catch (error) {
     const message =
@@ -1075,6 +1140,10 @@ export async function refreshSource(
       )
       .bind(message, sourceId)
       .run();
+    logError("source.refresh.failed", error, {
+      sourceId,
+      durationMs: Date.now() - startedAt,
+    });
     return { ok: false, sourceId, error: message };
   }
 }
@@ -1112,12 +1181,18 @@ export async function refreshDueSources(database = getD1()) {
   const results = await Promise.all(
     dueSources.map((source) => refreshSource(source.id, database, false)),
   );
-  return {
+  const summary = {
     ok: results.every((result) => result.ok),
     refreshed: results.length,
     failed: results.filter((result) => !result.ok).length,
     results,
   };
+  logInfo("scheduler.refresh.completed", {
+    due: dueSources.length,
+    refreshed: summary.refreshed,
+    failed: summary.failed,
+  });
+  return summary;
 }
 
 export async function getAggregatedList(slug: string) {

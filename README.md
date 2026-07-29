@@ -24,7 +24,6 @@ exclusion sources, and publishes a vendor-neutral plain-text URL.
 - In-place editing and validation for manual EDL sources
 - Editable published-list names, descriptions, and endpoint URL slugs
 - Admin-controlled Signal, Ocean, Ember, and Midnight themes across the app
-- Configurable public endpoint origin for reverse-proxy deployments
 - HttpOnly database-backed management sessions with PKCE and nonce validation
 - Optional bearer-token recovery access for the management API
 - Per-source refresh schedules from five minutes to weekly
@@ -80,15 +79,17 @@ the database contains no users, so an administrator created by an earlier
 deployment remains in place after an upgrade. Do not remove a production data
 volume to recover access; use the password-reset command below.
 
-Set a strong `CRON_SECRET` in `.env` to enable the container's automatic
-five-minute refresh check:
+The container automatically checks for due sources every five minutes. It
+generates an internal scheduler token when `CRON_SECRET` is empty. Set a strong,
+stable `CRON_SECRET` in `.env` only when an external scheduler also needs to
+invoke the refresh endpoint:
 
 ```bash
 openssl rand -hex 32
 ```
 
-If `CRON_SECRET` is unset, automatic refreshes remain disabled and the service
-logs a warning.
+The container logs the number of refreshed and failed sources after every
+scheduler run.
 
 ### Publishing the image
 
@@ -218,18 +219,66 @@ https://YOUR_HOST/api/auth/callback/microsoft
 ```
 
 Set `MICROSOFT_OIDC_CLIENT_ID`, `MICROSOFT_OIDC_CLIENT_SECRET`, and
-`MICROSOFT_OIDC_TENANT_ID`. A tenant UUID is the safest default for an internal
-deployment.
+`MICROSOFT_OIDC_TENANT_ID`. The tenant ID must be the directory tenant UUID
+from Microsoft Entra ID.
 
 Use `AUTH_ALLOWED_DOMAINS` and/or `AUTH_ALLOWED_EMAILS` to restrict who may
 manage the service after authentication.
 
 ### Scheduled refreshes
 
-The Docker entrypoint checks for due sources every five minutes when
-`CRON_SECRET` is configured. Each source can be set to 5, 15, or 30 minutes;
-hourly; every 6 or 12 hours; daily; or weekly. External schedulers can call
-`POST /api/cron/refresh` with `Authorization: Bearer $CRON_SECRET`.
+The Docker entrypoint checks for due sources every five minutes. Each source
+can be set to 5, 15, or 30 minutes; hourly; every 6 or 12 hours; daily; or
+weekly. External schedulers can call `POST /api/cron/refresh` with
+`Authorization: Bearer $CRON_SECRET` when a stable `CRON_SECRET` is configured.
+
+### Container logs
+
+Follow application activity with:
+
+```bash
+docker compose logs --follow --tail 100 openedl
+```
+
+OpenEDL emits one-line structured events for container lifecycle, scheduler
+runs, source configuration changes, refresh durations and entry counts,
+authentication outcomes, and SSO provider changes. Credentials and source URLs
+are not written to logs. Event names such as `source.refresh.failed` and
+`auth.sso.failed` can be filtered directly with standard log tooling.
+
+### Restricting the management interface by IP
+
+Enforce an administrator IP allowlist at the reverse proxy or edge access
+layer. Keep `/edl/*` public for firewalls that retrieve published lists, and
+restrict every other path, including the management page, authentication
+callbacks, management APIs, and static application assets. `/api/health` may
+also remain public when an external health monitor requires it.
+
+For example, a Caddy proxy can separate the public endpoints from allowed
+management clients:
+
+```caddyfile
+edl.example.com {
+  @public path /edl/* /api/health
+  handle @public {
+    reverse_proxy openedl:3000
+  }
+
+  @management remote_ip 192.0.2.10 198.51.100.0/24
+  handle @management {
+    reverse_proxy openedl:3000
+  }
+
+  respond 404
+}
+```
+
+Replace the example addresses with the administrator egress addresses. If
+another CDN or load balancer sits in front of the proxy, configure its trusted
+proxy ranges before using a forwarded client IP, or apply the allowlist at that
+outermost edge. Do not expose the container's port directly around the proxy.
+Account email/domain allowlists remain useful as a second layer, but they do
+not replace the network allowlist.
 
 ## Cloudflare Workers deployment
 

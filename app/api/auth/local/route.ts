@@ -2,6 +2,7 @@ import {
   LocalAuthenticationError,
   loginWithLocalAccount,
 } from "../../../../lib/auth";
+import { logError, logWarn } from "../../../../lib/logging";
 
 export async function POST(request: Request) {
   try {
@@ -19,6 +20,11 @@ export async function POST(request: Request) {
       { headers: { "set-cookie": cookie } },
     );
   } catch (error) {
+    if (error instanceof LocalAuthenticationError) {
+      logWarn("auth.local.rejected", { status: error.status });
+    } else {
+      logError("auth.local.failed", error);
+    }
     return Response.json(
       {
         error:

@@ -21,6 +21,7 @@ type Props = {
 
 type ProviderForm = {
   preset: "google" | "microsoft" | "custom";
+  tenantId: string;
   id: string;
   name: string;
   issuer: string;
@@ -33,6 +34,7 @@ type ProviderForm = {
 
 const emptyProvider: ProviderForm = {
   preset: "custom",
+  tenantId: "",
   id: "",
   name: "",
   issuer: "",
@@ -61,12 +63,17 @@ function presetProvider(preset: ProviderForm["preset"]): ProviderForm {
       preset,
       id: "microsoft",
       name: "Microsoft",
-      issuer: "https://login.microsoftonline.com/organizations/v2.0",
-      discoveryUrl:
-        "https://login.microsoftonline.com/organizations/v2.0/.well-known/openid-configuration",
     };
   }
   return { ...emptyProvider };
+}
+
+function microsoftTenantId(issuer: string) {
+  return (
+    /^https:\/\/login\.microsoftonline\.com\/([^/]+)\/v2\.0$/i.exec(
+      issuer,
+    )?.[1] ?? ""
+  );
 }
 
 export function SsoSettings({ apiFetch, setNotice }: Props) {
@@ -117,9 +124,12 @@ export function SsoSettings({ apiFetch, setNotice }: Props) {
   }
 
   function startEdit(provider: ProviderSetting) {
+    const tenantId =
+      provider.id === "microsoft" ? microsoftTenantId(provider.issuer) : "";
     setEditingId(provider.id);
     setForm({
-      preset: "custom",
+      preset: tenantId ? "microsoft" : "custom",
+      tenantId,
       id: provider.id,
       name: provider.name,
       issuer: provider.issuer,
@@ -138,13 +148,21 @@ export function SsoSettings({ apiFetch, setNotice }: Props) {
     setError("");
     setBusy(editingId ?? "new");
     try {
+      const providerPayload =
+        form.preset === "microsoft"
+          ? {
+              ...form,
+              issuer: `https://login.microsoftonline.com/${form.tenantId}/v2.0`,
+              discoveryUrl: `https://login.microsoftonline.com/${form.tenantId}/v2.0/.well-known/openid-configuration`,
+            }
+          : form;
       const path = editingId
         ? `/api/settings/sso/${editingId}`
         : "/api/settings/sso";
       const response = await apiFetch(path, {
         method: editingId ? "PATCH" : "POST",
         body: JSON.stringify({
-          ...form,
+          ...providerPayload,
           clientSecret: form.clientSecret || undefined,
         }),
       });
@@ -431,30 +449,55 @@ export function SsoSettings({ apiFetch, setNotice }: Props) {
                   />
                 </div>
               </div>
-              <div className="field">
-                <label htmlFor="provider-issuer">Issuer URL</label>
-                <input
-                  id="provider-issuer"
-                  type="url"
-                  value={form.issuer}
-                  onChange={(event) =>
-                    setForm({ ...form, issuer: event.target.value })
-                  }
-                  required
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="provider-discovery">Discovery URL</label>
-                <input
-                  id="provider-discovery"
-                  type="url"
-                  value={form.discoveryUrl}
-                  onChange={(event) =>
-                    setForm({ ...form, discoveryUrl: event.target.value })
-                  }
-                  placeholder="Defaults to issuer/.well-known/openid-configuration"
-                />
-              </div>
+              {form.preset === "microsoft" ? (
+                <div className="field">
+                  <label htmlFor="provider-tenant-id">
+                    Directory (tenant) ID
+                  </label>
+                  <input
+                    id="provider-tenant-id"
+                    value={form.tenantId}
+                    onChange={(event) =>
+                      setForm({ ...form, tenantId: event.target.value.trim() })
+                    }
+                    placeholder="00000000-0000-0000-0000-000000000000"
+                    pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+                    title="Enter the tenant UUID from Microsoft Entra ID."
+                    required
+                  />
+                  <small>
+                    OpenEDL builds the tenant-specific Microsoft issuer and
+                    discovery URLs from this value.
+                  </small>
+                </div>
+              ) : (
+                <>
+                  <div className="field">
+                    <label htmlFor="provider-issuer">Issuer URL</label>
+                    <input
+                      id="provider-issuer"
+                      type="url"
+                      value={form.issuer}
+                      onChange={(event) =>
+                        setForm({ ...form, issuer: event.target.value })
+                      }
+                      required
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="provider-discovery">Discovery URL</label>
+                    <input
+                      id="provider-discovery"
+                      type="url"
+                      value={form.discoveryUrl}
+                      onChange={(event) =>
+                        setForm({ ...form, discoveryUrl: event.target.value })
+                      }
+                      placeholder="Defaults to issuer/.well-known/openid-configuration"
+                    />
+                  </div>
+                </>
+              )}
               <div className="field">
                 <label htmlFor="provider-client-id">Client ID</label>
                 <input

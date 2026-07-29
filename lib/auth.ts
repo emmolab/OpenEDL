@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { ensureDatabase, getD1 } from "../db/core";
+import { logInfo } from "./logging";
 
 type RuntimeEnv = {
   ADMIN_TOKEN?: string;
@@ -100,6 +101,8 @@ const PASSWORD_ITERATIONS = 600_000;
 const PASSWORD_MIN_LENGTH = 12;
 const PASSWORD_MAX_LENGTH = 128;
 const MAX_LOGIN_ATTEMPTS = 5;
+const MICROSOFT_TENANT_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function parseList(value: string | undefined) {
   return new Set(
@@ -133,7 +136,12 @@ function environmentProviders() {
     runtimeEnv.MICROSOFT_OIDC_CLIENT_ID &&
     runtimeEnv.MICROSOFT_OIDC_CLIENT_SECRET
   ) {
-    const tenant = runtimeEnv.MICROSOFT_OIDC_TENANT_ID?.trim() || "common";
+    const tenant = runtimeEnv.MICROSOFT_OIDC_TENANT_ID?.trim() ?? "";
+    if (!MICROSOFT_TENANT_ID_PATTERN.test(tenant)) {
+      throw new Error(
+        "MICROSOFT_OIDC_TENANT_ID must be the tenant UUID from Microsoft Entra ID.",
+      );
+    }
     const issuer = `https://login.microsoftonline.com/${tenant}/v2.0`;
     providers.push({
       id: "microsoft",
@@ -341,6 +349,17 @@ function normalizeOidcSetting(input: {
   if (!issuer.startsWith("https://") || !discoveryUrl.startsWith("https://")) {
     throw new Error("Issuer and discovery URLs must use HTTPS.");
   }
+  if (id === "microsoft") {
+    const tenant =
+      /^https:\/\/login\.microsoftonline\.com\/([^/]+)\/v2\.0$/i.exec(
+        issuer,
+      )?.[1] ?? "";
+    if (!MICROSOFT_TENANT_ID_PATTERN.test(tenant)) {
+      throw new Error(
+        "Microsoft Entra ID requires a tenant-specific issuer containing the directory tenant UUID.",
+      );
+    }
+  }
   if (!clientId || clientId.length > 512) {
     throw new Error("A valid client id is required.");
   }
@@ -407,6 +426,10 @@ export async function createOidcProviderSetting(input: {
     throw error;
   }
   metadataCache.delete(setting.discoveryUrl);
+  logInfo("sso.provider.created", {
+    providerId: setting.id,
+    enabled: setting.enabled,
+  });
   return setting.id;
 }
 
@@ -471,6 +494,11 @@ export async function updateOidcProviderSetting(
     .run();
   metadataCache.delete(existing.discovery_url);
   metadataCache.delete(setting.discoveryUrl);
+  logInfo("sso.provider.updated", {
+    providerId,
+    enabled: setting.enabled,
+    credentialReplaced: Boolean(input.clientSecret),
+  });
 }
 
 export async function deleteOidcProviderSetting(providerId: string) {
@@ -482,6 +510,7 @@ export async function deleteOidcProviderSetting(providerId: string) {
   if ((result.meta.changes ?? 0) === 0) {
     throw new Error("GUI-managed OIDC provider not found.");
   }
+  logInfo("sso.provider.deleted", { providerId });
 }
 
 export async function testOidcProviderSetting(providerId: string) {
@@ -988,6 +1017,10 @@ export async function completeOidcLogin(
   if (!user) throw new Error("Unable to create the local user session.");
   if (!user.active) throw new Error("This OpenEDL account is disabled.");
 
+  logInfo("auth.sso.succeeded", {
+    providerId: provider.id,
+    userId: user.id,
+  });
   return {
     returnTo: safeReturnTo(challenge.return_to),
     cookie: await createSession(request, user.id),
@@ -1227,6 +1260,7 @@ export async function createInitialAdministrator(
     throw new Error("The administrator was created but could not be loaded.");
   }
 
+  logInfo("auth.setup.completed", { userId });
   return {
     cookie: await createSession(request, userId),
     user: {
@@ -1324,6 +1358,7 @@ export async function loginWithLocalAccount(
     )
     .bind(user.id)
     .run();
+  logInfo("auth.local.succeeded", { userId: user.id });
   return createSession(request, user.id);
 }
 

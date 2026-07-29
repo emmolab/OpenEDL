@@ -168,11 +168,9 @@ default.
    MICROSOFT_OIDC_TENANT_ID=YOUR_DIRECTORY_TENANT_ID
    ```
 
-`MICROSOFT_OIDC_TENANT_ID` can be a tenant UUID, `organizations`, `common`, or
-another Microsoft-supported tenant selector. A tenant UUID gives the narrowest
-default. The Microsoft template in the GUI initially uses `organizations`; for
-a single-tenant deployment, replace `organizations` in both the issuer and
-discovery URLs with the directory tenant UUID.
+`MICROSOFT_OIDC_TENANT_ID` must be the directory tenant UUID shown in Microsoft
+Entra ID. The Microsoft template in the GUI captures that tenant ID directly
+and builds the tenant-specific issuer and discovery URLs automatically.
 
 Microsoft documents app registration and web redirect configuration in its
 [application registration guide](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app)

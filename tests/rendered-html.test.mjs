@@ -14,6 +14,8 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
     worker,
     maintenance,
     maintenanceRoute,
+    ssoSettings,
+    sourceRoute,
   ] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/dashboard.tsx", import.meta.url), "utf8"),
@@ -26,6 +28,11 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
     readFile(new URL("../app/maintenance-settings.tsx", import.meta.url), "utf8"),
     readFile(
       new URL("../app/api/settings/maintenance/route.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(new URL("../app/sso-settings.tsx", import.meta.url), "utf8"),
+    readFile(
+      new URL("../app/api/sources/[id]/route.ts", import.meta.url),
       "utf8",
     ),
   ]);
@@ -43,6 +50,17 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
   assert.match(dashboard, /CSV \/ manual/);
   assert.match(dashboard, /Recorded Future/);
   assert.match(dashboard, /X-RFToken/);
+  assert.match(dashboard, /Edit remote or API source/);
+  assert.match(
+    dashboard,
+    /Leave blank to keep the existing encrypted credential/,
+  );
+  assert.match(sourceRoute, /updateRemoteSource/);
+  assert.match(ssoSettings, /Directory \(tenant\) ID/);
+  assert.match(
+    ssoSettings,
+    /login\.microsoftonline\.com\/\$\{form\.tenantId\}/,
+  );
   assert.match(dashboard, /Maintenance/);
   assert.match(maintenance, /Run database VACUUM/);
   assert.match(maintenance, /Authenticated API feed limit/);

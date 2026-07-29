@@ -54,12 +54,16 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
       ...process.env,
       ADMIN_TOKEN: "",
       AUTH_BASE_URL: baseUrl,
+      CONFIG_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
       DATABASE_PATH: join(workingDirectory, "openedl.sqlite"),
       HOST: "127.0.0.1",
       HOSTNAME: "127.0.0.1",
       LOCAL_AUTH_BOOTSTRAP_EMAIL: "legacy-bootstrap@example.com",
       LOCAL_AUTH_BOOTSTRAP_NAME: "Legacy bootstrap",
       LOCAL_AUTH_BOOTSTRAP_PASSWORD: "this must no longer create an account",
+      MICROSOFT_OIDC_CLIENT_ID: "",
+      MICROSOFT_OIDC_CLIENT_SECRET: "",
+      MICROSOFT_OIDC_TENANT_ID: "",
       OIDC_PROVIDERS_JSON: "",
       PORT: String(port),
     },
@@ -155,6 +159,81 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
     headers: { cookie },
   });
   assert.equal(authenticatedDashboard.status, 200);
+  const initialDashboard = await authenticatedDashboard.json();
+  const source = initialDashboard.lists[0].sources.find(
+    (candidate) => candidate.kind === "remote",
+  );
+  assert.ok(source?.id);
+
+  const updateSourceResponse = await fetch(
+    `${baseUrl}/api/sources/${source.id}`,
+    {
+      method: "PATCH",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Edited authenticated API source",
+        url: "https://example.com/feed.json",
+        format: "json",
+        role: "exclude",
+        apiProvider: "generic",
+        apiAuthType: "header",
+        apiAuthHeader: "X-Vendor-Key",
+        apiSecret: "replacement test credential",
+        jsonPath: "data.results[].indicator",
+        refreshIntervalMinutes: 15,
+      }),
+    },
+  );
+  const updateSourcePayload = await updateSourceResponse.json();
+  assert.equal(
+    updateSourceResponse.status,
+    200,
+    JSON.stringify(updateSourcePayload),
+  );
+  assert.deepEqual(updateSourcePayload, {
+    ok: true,
+    refreshDue: true,
+  });
+
+  const preserveCredentialResponse = await fetch(
+    `${baseUrl}/api/sources/${source.id}`,
+    {
+      method: "PATCH",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Edited API source without secret replacement",
+        url: "https://example.com/feed-v2.json",
+        format: "json",
+        role: "exclude",
+        apiProvider: "generic",
+        apiAuthType: "header",
+        apiAuthHeader: "X-Revised-Key",
+        jsonPath: "results[].value",
+        refreshIntervalMinutes: 30,
+      }),
+    },
+  );
+  assert.equal(preserveCredentialResponse.status, 200);
+
+  const editedDashboardResponse = await fetch(`${baseUrl}/api/dashboard`, {
+    headers: { cookie },
+  });
+  assert.equal(editedDashboardResponse.status, 200);
+  const editedDashboard = await editedDashboardResponse.json();
+  const editedSource = editedDashboard.lists[0].sources.find(
+    (candidate) => candidate.id === source.id,
+  );
+  assert.equal(editedSource.name, "Edited API source without secret replacement");
+  assert.equal(editedSource.url, "https://example.com/feed-v2.json");
+  assert.equal(editedSource.format, "json");
+  assert.equal(editedSource.role, "exclude");
+  assert.equal(editedSource.api_provider, "generic");
+  assert.equal(editedSource.api_auth_type, "header");
+  assert.equal(editedSource.api_auth_header, "X-Revised-Key");
+  assert.equal(editedSource.has_api_secret, true);
+  assert.equal(editedSource.json_path, "results[].value");
+  assert.equal(editedSource.refresh_interval_minutes, 30);
+  assert.equal(editedSource.status, "pending");
 
   const maintenanceResponse = await fetch(
     `${baseUrl}/api/settings/maintenance`,
