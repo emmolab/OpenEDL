@@ -6,13 +6,9 @@ OpenEDL is a self-hosted External Dynamic List (EDL) manager for security teams.
 
 OpenEDL turns noisy upstream threat intelligence into a small set of reliable, vendor-neutral list URLs that your perimeter stack can consume. It includes a browser-based admin portal, local and OIDC authentication, encrypted API feed secrets, scheduled refreshes, and last-known-good caching so feed outages do not break policy delivery.
 
-## Screenshots
+## Screenshot
 
 ![OpenEDL dashboard overview](public/screenshots/dashboard-overview.png)
-
-![OpenEDL source management](public/screenshots/source-management.png)
-
-![OpenEDL first-run setup](public/screenshots/initial-setup.png)
 
 ## Highlights
 
