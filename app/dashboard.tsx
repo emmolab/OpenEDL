@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { AppearanceSettings } from "./appearance-settings";
+import { BlockAudit } from "./block-audit";
 import { InitialSetup } from "./initial-setup";
 import { MaintenanceSettings } from "./maintenance-settings";
 import { ProfileSettings } from "./profile-settings";
@@ -204,6 +205,7 @@ export function Dashboard() {
     | "overview"
     | "sources"
     | "published"
+    | "audit"
     | "users"
     | "sso"
     | "appearance"
@@ -884,6 +886,13 @@ export function Dashboard() {
             Published lists
             <b>{data?.lists.length ?? 0}</b>
           </button>
+          <button
+            className={activeView === "audit" ? "active" : ""}
+            onClick={() => setActiveView("audit")}
+          >
+            <span aria-hidden="true">≋</span>
+            Block audit
+          </button>
           {currentUser?.role === "admin" && (
             <button
               className={activeView === "users" ? "active" : ""}
@@ -996,6 +1005,12 @@ export function Dashboard() {
           ) : activeView === "maintenance" &&
             currentUser?.role === "admin" ? (
             <MaintenanceSettings apiFetch={apiFetch} setNotice={setNotice} />
+          ) : activeView === "audit" ? (
+            <BlockAudit
+              apiFetch={apiFetch}
+              canUnblock={currentUser?.role === "admin"}
+              setNotice={setNotice}
+            />
           ) : activeView === "profile" && currentUser ? (
             <ProfileSettings
               apiFetch={apiFetch}

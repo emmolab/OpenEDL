@@ -36,6 +36,26 @@ export type DatabaseStats = {
   reclaimableBytes: number;
 };
 
+export type VacuumSchedule = "disabled" | "daily" | "weekly" | "monthly";
+
+export type VacuumScheduleSettings = {
+  schedule: VacuumSchedule;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastStatus: "never" | "success" | "failed";
+  lastError: string | null;
+};
+
+export type BlockAuditEvent = {
+  id: number;
+  list_id: number;
+  list_name: string;
+  entry: string;
+  action: "blocked" | "unblocked";
+  reason: string;
+  occurred_at: string;
+};
+
 const DEFAULT_REMOTE_SOURCE_MAX_MB = 2;
 const DEFAULT_API_SOURCE_MAX_MB = 20;
 
@@ -211,6 +231,25 @@ async function createSchema(database: D1Database) {
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`,
       ),
+    database
+      .prepare(
+        `CREATE TABLE IF NOT EXISTS block_audit_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          list_id INTEGER NOT NULL REFERENCES edl_lists(id) ON DELETE CASCADE,
+          entry TEXT NOT NULL,
+          action TEXT NOT NULL CHECK(action IN ('blocked', 'unblocked')),
+          reason TEXT NOT NULL DEFAULT 'source_refresh',
+          occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`,
+      ),
+    database
+      .prepare(
+        `CREATE TABLE IF NOT EXISTS lifetime_blocked_entries (
+          entry TEXT PRIMARY KEY,
+          first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`,
+      ),
     database.prepare(
       "CREATE UNIQUE INDEX IF NOT EXISTS edl_lists_slug_idx ON edl_lists(slug)",
     ),
@@ -231,6 +270,15 @@ async function createSchema(database: D1Database) {
     ),
     database.prepare(
       "CREATE INDEX IF NOT EXISTS auth_challenges_expires_idx ON auth_challenges(expires_at)",
+    ),
+    database.prepare(
+      "CREATE INDEX IF NOT EXISTS block_audit_list_time_idx ON block_audit_events(list_id, occurred_at)",
+    ),
+    database.prepare(
+      "CREATE INDEX IF NOT EXISTS block_audit_entry_idx ON block_audit_events(entry)",
+    ),
+    database.prepare(
+      "CREATE INDEX IF NOT EXISTS lifetime_blocks_last_seen_idx ON lifetime_blocked_entries(last_seen_at)",
     ),
   ]);
 
@@ -289,6 +337,21 @@ async function createSchema(database: D1Database) {
        VALUES ('api_source_max_mb', '20')`,
     )
     .run();
+  const maintenanceDefaults = [
+    ["vacuum_schedule", "disabled"],
+    ["vacuum_next_at", ""],
+    ["vacuum_last_at", ""],
+    ["vacuum_last_status", "never"],
+    ["vacuum_last_error", ""],
+  ] as const;
+  for (const [key, value] of maintenanceDefaults) {
+    await database
+      .prepare(
+        `INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)`,
+      )
+      .bind(key, value)
+      .run();
+  }
   await database
     .prepare(
       `INSERT INTO sources (
@@ -650,9 +713,83 @@ export async function getDatabaseStats() {
   return readDatabaseStats(getD1());
 }
 
-export async function vacuumDatabase() {
+function nextVacuumDate(schedule: Exclude<VacuumSchedule, "disabled">) {
+  const next = new Date();
+  next.setUTCSeconds(0, 0);
+  if (schedule === "daily") next.setUTCDate(next.getUTCDate() + 1);
+  if (schedule === "weekly") next.setUTCDate(next.getUTCDate() + 7);
+  if (schedule === "monthly") next.setUTCMonth(next.getUTCMonth() + 1);
+  return next.toISOString();
+}
+
+export async function getVacuumSchedule(
+  database = getD1(),
+  initialize = true,
+): Promise<VacuumScheduleSettings> {
+  if (initialize) await ensureDatabase(database);
+  const { results } = await database
+    .prepare(
+      `SELECT key, value FROM app_settings
+       WHERE key IN (
+         'vacuum_schedule', 'vacuum_next_at', 'vacuum_last_at',
+         'vacuum_last_status', 'vacuum_last_error'
+       )`,
+    )
+    .all<{ key: string; value: string }>();
+  const values = new Map(results.map((row) => [row.key, row.value]));
+  const configured = values.get("vacuum_schedule") ?? "disabled";
+  const schedule: VacuumSchedule = [
+    "daily",
+    "weekly",
+    "monthly",
+  ].includes(configured)
+    ? (configured as VacuumSchedule)
+    : "disabled";
+  const lastStatus = values.get("vacuum_last_status") ?? "never";
+  return {
+    schedule,
+    nextRunAt: values.get("vacuum_next_at") || null,
+    lastRunAt: values.get("vacuum_last_at") || null,
+    lastStatus:
+      lastStatus === "success" || lastStatus === "failed"
+        ? lastStatus
+        : "never",
+    lastError: values.get("vacuum_last_error") || null,
+  };
+}
+
+export async function updateVacuumSchedule(schedule: VacuumSchedule) {
+  if (!["disabled", "daily", "weekly", "monthly"].includes(schedule)) {
+    throw new Error("Invalid database VACUUM schedule.");
+  }
   await ensureDatabase();
-  const database = getD1();
+  const nextRunAt = schedule === "disabled" ? "" : nextVacuumDate(schedule);
+  await getD1().batch([
+    getD1()
+      .prepare(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('vacuum_schedule', ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+           updated_at = CURRENT_TIMESTAMP`,
+      )
+      .bind(schedule),
+    getD1()
+      .prepare(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('vacuum_next_at', ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+           updated_at = CURRENT_TIMESTAMP`,
+      )
+      .bind(nextRunAt),
+  ]);
+  return getVacuumSchedule();
+}
+
+export async function vacuumDatabase(
+  database = getD1(),
+  initialize = true,
+) {
+  if (initialize) await ensureDatabase(database);
   const before = await readDatabaseStats(database);
   try {
     await database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
@@ -674,6 +811,90 @@ export async function vacuumDatabase() {
     after,
     reclaimedBytes: Math.max(0, before.sizeBytes - after.sizeBytes),
   };
+}
+
+export async function runScheduledMaintenance(database = getD1()) {
+  await ensureDatabase(database);
+  const settings = await getVacuumSchedule(database, false);
+  if (
+    settings.schedule === "disabled" ||
+    !settings.nextRunAt ||
+    new Date(settings.nextRunAt).getTime() > Date.now()
+  ) {
+    return { ran: false, schedule: settings };
+  }
+
+  // Advance the due time before starting so overlapping scheduler ticks cannot
+  // repeatedly claim the same maintenance window.
+  const claim = await database
+    .prepare(
+      `UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE key = 'vacuum_next_at' AND value = ?`,
+    )
+    .bind(nextVacuumDate(settings.schedule), settings.nextRunAt)
+    .run();
+  if ((claim.meta.changes ?? 0) === 0) {
+    return {
+      ran: false,
+      schedule: await getVacuumSchedule(database, false),
+    };
+  }
+  try {
+    const result = await vacuumDatabase(database, false);
+    await database.batch([
+      database
+        .prepare(
+          `UPDATE app_settings SET value = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP WHERE key = 'vacuum_last_at'`,
+        ),
+      database
+        .prepare(
+          `UPDATE app_settings SET value = 'success',
+             updated_at = CURRENT_TIMESTAMP WHERE key = 'vacuum_last_status'`,
+        ),
+      database
+        .prepare(
+          `UPDATE app_settings SET value = '', updated_at = CURRENT_TIMESTAMP
+           WHERE key = 'vacuum_last_error'`,
+        ),
+    ]);
+    logInfo("scheduler.vacuum.completed", {
+      reclaimedBytes: result.reclaimedBytes,
+    });
+    return {
+      ran: true,
+      ok: true,
+      result,
+      schedule: await getVacuumSchedule(database, false),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await database.batch([
+      database
+        .prepare(
+          `UPDATE app_settings SET value = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP WHERE key = 'vacuum_last_at'`,
+        ),
+      database
+        .prepare(
+          `UPDATE app_settings SET value = 'failed',
+             updated_at = CURRENT_TIMESTAMP WHERE key = 'vacuum_last_status'`,
+        ),
+      database
+        .prepare(
+          `UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE key = 'vacuum_last_error'`,
+        )
+        .bind(message.slice(0, 1000)),
+    ]);
+    logError("scheduler.vacuum.failed", error);
+    return {
+      ran: true,
+      ok: false,
+      error: message,
+      schedule: await getVacuumSchedule(database, false),
+    };
+  }
 }
 
 export async function getList(idOrSlug: number | string) {
@@ -832,6 +1053,7 @@ export async function createSource(input: {
           input.apiSecret,
         )
       : null;
+  const before = await snapshotIpLists(database, [input.listId]);
   const result = await database
     .prepare(
       `INSERT INTO sources (
@@ -870,6 +1092,7 @@ export async function createSource(input: {
     )
     .bind(input.listId, sourceId, input.role)
     .run();
+  await recordIpListChanges(database, before, [input.listId], "source_added");
 
   logInfo("source.created", {
     sourceId,
@@ -882,10 +1105,14 @@ export async function createSource(input: {
 
 export async function deleteSource(sourceId: number) {
   await ensureDatabase();
-  const result = await getD1()
+  const database = getD1();
+  const listIds = await getIpListIdsForSource(database, sourceId);
+  const before = await snapshotIpLists(database, listIds);
+  const result = await database
     .prepare("DELETE FROM sources WHERE id = ?")
     .bind(sourceId)
     .run();
+  await recordIpListChanges(database, before, listIds, "source_deleted");
   logInfo("source.deleted", {
     sourceId,
     deleted: (result.meta.changes ?? 0) > 0,
@@ -917,6 +1144,8 @@ export async function updateRemoteSource(
   if (source.kind !== "remote") {
     throw new Error("Only remote and API sources can use this editor.");
   }
+  const listIds = await getIpListIdsForSource(database, sourceId);
+  const before = await snapshotIpLists(database, listIds);
   if (
     input.apiAuthType !== "none" &&
     !input.apiSecret &&
@@ -973,6 +1202,7 @@ export async function updateRemoteSource(
       .prepare("UPDATE list_sources SET role = ? WHERE source_id = ?")
       .bind(input.role, sourceId),
   ]);
+  await recordIpListChanges(database, before, listIds, "source_updated");
 
   logInfo("source.updated", {
     sourceId,
@@ -1017,6 +1247,8 @@ export async function updateManualSource(
   if (source.kind !== "manual") {
     throw new Error("Only manual sources can be edited directly.");
   }
+  const listIds = await getIpListIdsForSource(database, sourceId);
+  const before = await snapshotIpLists(database, listIds);
   const entries = normalizeEntries(manualEntries, source.type, source.format);
   if (entries.length === 0) {
     throw new Error("Add at least one valid entry for this source type.");
@@ -1040,6 +1272,7 @@ export async function updateManualSource(
       sourceId,
     )
     .run();
+  await recordIpListChanges(database, before, listIds, "manual_update");
   return entries.length;
 }
 
@@ -1047,6 +1280,7 @@ export async function refreshSource(
   sourceId: number,
   database = getD1(),
   initialize = true,
+  trackAudit = true,
 ) {
   if (initialize) await ensureDatabase(database);
   const source = await database
@@ -1054,6 +1288,12 @@ export async function refreshSource(
     .bind(sourceId)
     .first<SourceRow>();
   if (!source) throw new Error("Source not found.");
+  const listIds = trackAudit
+    ? await getIpListIdsForSource(database, sourceId)
+    : [];
+  const before = trackAudit
+    ? await snapshotIpLists(database, listIds)
+    : new Map<number, Set<string>>();
   const startedAt = Date.now();
   logInfo("source.refresh.started", {
     sourceId,
@@ -1117,6 +1357,14 @@ export async function refreshSource(
       )
       .bind(JSON.stringify(entries), entries.length, sourceId)
       .run();
+    if (trackAudit) {
+      await recordIpListChanges(
+        database,
+        before,
+        listIds,
+        "source_refresh",
+      );
+    }
     logInfo("source.refresh.completed", {
       sourceId,
       entries: entries.length,
@@ -1150,11 +1398,14 @@ export async function refreshSource(
 
 export async function refreshList(listId: number) {
   const sources = await getSourcesForList(listId);
+  const database = getD1();
+  const before = await snapshotIpLists(database, [listId]);
   const results = await Promise.all(
     sources
       .filter((source) => source.enabled)
-      .map((source) => refreshSource(source.id)),
+      .map((source) => refreshSource(source.id, database, false, false)),
   );
+  await recordIpListChanges(database, before, [listId], "list_refresh");
 
   return {
     ok: results.every((result) => result.ok),
@@ -1178,9 +1429,20 @@ export async function refreshDueSources(database = getD1()) {
     )
     .all<{ id: number }>();
 
+  const affectedListIds = new Set<number>();
+  for (const source of dueSources) {
+    const listIds = await getIpListIdsForSource(database, source.id);
+    listIds.forEach((listId) => affectedListIds.add(listId));
+  }
+  const listIds = [...affectedListIds];
+  const before = await snapshotIpLists(database, listIds);
+
   const results = await Promise.all(
-    dueSources.map((source) => refreshSource(source.id, database, false)),
+    dueSources.map((source) =>
+      refreshSource(source.id, database, false, false),
+    ),
   );
+  await recordIpListChanges(database, before, listIds, "scheduled_refresh");
   const summary = {
     ok: results.every((result) => result.ok),
     refreshed: results.length,
@@ -1212,4 +1474,286 @@ export async function getAggregatedList(slug: string) {
     sources,
     ...aggregateEntries(includeSources, excludeSources),
   };
+}
+
+async function aggregateIpListFromDatabase(
+  database: D1Database,
+  listId: number,
+) {
+  const { results } = await database
+    .prepare(
+      `SELECT sources.cached_entries, sources.enabled, list_sources.role
+       FROM sources
+       INNER JOIN list_sources ON list_sources.source_id = sources.id
+       WHERE list_sources.list_id = ?`,
+    )
+    .bind(listId)
+    .all<Pick<SourceRow, "cached_entries" | "enabled" | "role">>();
+  const includeSources = results
+    .filter((source) => source.enabled && source.role === "include")
+    .map((source) => parseCachedEntries(source.cached_entries));
+  const excludeSources = results
+    .filter((source) => source.enabled && source.role === "exclude")
+    .map((source) => parseCachedEntries(source.cached_entries));
+  return aggregateEntries(includeSources, excludeSources).entries;
+}
+
+async function getIpListIdsForSource(
+  database: D1Database,
+  sourceId: number,
+) {
+  const { results } = await database
+    .prepare(
+      `SELECT edl_lists.id
+       FROM edl_lists
+       INNER JOIN list_sources ON list_sources.list_id = edl_lists.id
+       WHERE list_sources.source_id = ? AND edl_lists.type = 'ip'`,
+    )
+    .bind(sourceId)
+    .all<{ id: number }>();
+  return results.map((row) => row.id);
+}
+
+async function snapshotIpLists(database: D1Database, listIds: number[]) {
+  const snapshot = new Map<number, Set<string>>();
+  for (const listId of [...new Set(listIds)]) {
+    const list = await database
+      .prepare("SELECT type FROM edl_lists WHERE id = ?")
+      .bind(listId)
+      .first<{ type: EdlType }>();
+    if (list?.type === "ip") {
+      snapshot.set(
+        listId,
+        new Set(await aggregateIpListFromDatabase(database, listId)),
+      );
+    }
+  }
+  return snapshot;
+}
+
+async function recordIpListChanges(
+  database: D1Database,
+  before: Map<number, Set<string>>,
+  listIds: number[],
+  reason: string,
+) {
+  const statements: ReturnType<D1Database["prepare"]>[] = [];
+  let blocked = 0;
+  let unblocked = 0;
+  for (const listId of [...new Set(listIds)]) {
+    const previous = before.get(listId);
+    if (!previous) continue;
+    const current = new Set(
+      await aggregateIpListFromDatabase(database, listId),
+    );
+    for (const entry of current) {
+      if (previous.has(entry)) continue;
+      blocked += 1;
+      statements.push(
+        database
+          .prepare(
+            `INSERT INTO block_audit_events (list_id, entry, action, reason)
+             VALUES (?, ?, 'blocked', ?)`,
+          )
+          .bind(listId, entry, reason),
+        database
+          .prepare(
+            `INSERT INTO lifetime_blocked_entries (entry)
+             VALUES (?)
+             ON CONFLICT(entry) DO UPDATE SET
+               last_seen_at = CURRENT_TIMESTAMP`,
+          )
+          .bind(entry),
+      );
+    }
+    for (const entry of previous) {
+      if (current.has(entry)) continue;
+      unblocked += 1;
+      statements.push(
+        database
+          .prepare(
+            `INSERT INTO block_audit_events (list_id, entry, action, reason)
+             VALUES (?, ?, 'unblocked', ?)`,
+          )
+          .bind(listId, entry, reason),
+      );
+    }
+  }
+  for (let index = 0; index < statements.length; index += 50) {
+    await database.batch(statements.slice(index, index + 50));
+  }
+  if (statements.length) {
+    logInfo("block_audit.recorded", { reason, blocked, unblocked });
+  }
+  return { blocked, unblocked };
+}
+
+async function backfillLifetimeBlockedEntries(database: D1Database) {
+  await database
+    .prepare(
+      `INSERT OR IGNORE INTO lifetime_blocked_entries (entry)
+       SELECT DISTINCT CAST(indicator.value AS TEXT)
+       FROM edl_lists
+       INNER JOIN list_sources AS include_links
+         ON include_links.list_id = edl_lists.id
+         AND include_links.role = 'include'
+       INNER JOIN sources AS include_sources
+         ON include_sources.id = include_links.source_id
+         AND include_sources.enabled = 1
+       INNER JOIN json_each(include_sources.cached_entries) AS indicator
+       WHERE edl_lists.type = 'ip'
+         AND NOT EXISTS (
+           SELECT 1
+           FROM list_sources AS exclude_links
+           INNER JOIN sources AS exclude_sources
+             ON exclude_sources.id = exclude_links.source_id
+             AND exclude_sources.enabled = 1
+           INNER JOIN json_each(exclude_sources.cached_entries) AS exclusion
+           WHERE exclude_links.list_id = edl_lists.id
+             AND exclude_links.role = 'exclude'
+             AND exclusion.value = indicator.value
+         )`,
+    )
+    .run();
+}
+
+export async function getBlockAudit(input: {
+  query?: string;
+  listId?: number;
+  limit?: number;
+}) {
+  await ensureDatabase();
+  const database = getD1();
+  await backfillLifetimeBlockedEntries(database);
+  const lifetime = await database
+    .prepare("SELECT COUNT(*) AS count FROM lifetime_blocked_entries")
+    .first<{ count: number }>();
+  const query = input.query?.trim().toLowerCase().slice(0, 256) ?? "";
+  const limit = Math.min(250, Math.max(1, input.limit ?? 100));
+  const { results: allLists } = await database
+    .prepare(
+      `SELECT id, name, slug FROM edl_lists
+       WHERE type = 'ip' ORDER BY name`,
+    )
+    .all<{ id: number; name: string; slug: string }>();
+  const lists = input.listId
+    ? allLists.filter((list) => list.id === input.listId)
+    : allLists;
+
+  const active: Array<{ listId: number; listName: string; entry: string }> = [];
+  let activeCount = 0;
+  for (const list of lists) {
+    const entries = await aggregateIpListFromDatabase(database, list.id);
+    activeCount += entries.length;
+    for (const entry of entries) {
+      if (query && !entry.toLowerCase().includes(query)) continue;
+      if (active.length < limit) {
+        active.push({ listId: list.id, listName: list.name, entry });
+      }
+    }
+  }
+
+  const searchPattern = `%${query.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+  const { results: events } = await database
+    .prepare(
+      `SELECT block_audit_events.*, edl_lists.name AS list_name
+       FROM block_audit_events
+       INNER JOIN edl_lists ON edl_lists.id = block_audit_events.list_id
+       WHERE (? IS NULL OR block_audit_events.list_id = ?)
+         AND (? = '' OR block_audit_events.entry LIKE ? ESCAPE '\\')
+       ORDER BY block_audit_events.id DESC
+       LIMIT ?`,
+    )
+    .bind(
+      input.listId ?? null,
+      input.listId ?? null,
+      query,
+      searchPattern,
+      limit,
+    )
+    .all<BlockAuditEvent>();
+
+  return {
+    lists: allLists,
+    active,
+    activeCount,
+    allTimeBlockedCount: Number(lifetime?.count ?? 0),
+    events,
+    note: "OpenEDL records published-list membership changes. Firewalls pull the full EDL, so per-connection enforcement events require firewall log integration.",
+  };
+}
+
+export async function unblockPublishedEntry(listId: number, value: string) {
+  await ensureDatabase();
+  const database = getD1();
+  const list = await database
+    .prepare("SELECT id, type FROM edl_lists WHERE id = ?")
+    .bind(listId)
+    .first<{ id: number; type: EdlType }>();
+  if (!list || list.type !== "ip") throw new Error("IP list not found.");
+  const [entry] = normalizeEntries(value, "ip", "text");
+  if (!entry || normalizeEntries(value, "ip", "text").length !== 1) {
+    throw new Error("Enter one valid IP address, range, or CIDR block.");
+  }
+  const current = await aggregateIpListFromDatabase(database, listId);
+  if (!current.includes(entry)) {
+    throw new Error("That entry is not currently published by this list.");
+  }
+
+  const before = await snapshotIpLists(database, [listId]);
+  const source = await database
+    .prepare(
+      `SELECT sources.* FROM sources
+       INNER JOIN list_sources ON list_sources.source_id = sources.id
+       WHERE list_sources.list_id = ? AND list_sources.role = 'exclude'
+         AND sources.kind = 'manual' AND sources.enabled = 1
+       ORDER BY CASE WHEN sources.name = 'Unblocked IPs' THEN 0 ELSE 1 END,
+         sources.id
+       LIMIT 1`,
+    )
+    .bind(listId)
+    .first<SourceRow>();
+
+  if (!source) {
+    const result = await database
+      .prepare(
+        `INSERT INTO sources (
+          name, kind, type, format, manual_entries, enabled, cached_entries,
+          entry_count, status, last_checked_at, last_success_at
+        ) VALUES ('Unblocked IPs', 'manual', 'ip', 'text', ?, 1, ?, 1,
+          'healthy', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      )
+      .bind(entry, JSON.stringify([entry]))
+      .run();
+    const sourceId = Number(result.meta.last_row_id);
+    await database
+      .prepare(
+        `INSERT INTO list_sources (list_id, source_id, role)
+         VALUES (?, ?, 'exclude')`,
+      )
+      .bind(listId, sourceId)
+      .run();
+  } else {
+    const entries = new Set(parseCachedEntries(source.cached_entries));
+    entries.add(entry);
+    const nextEntries = [...entries].sort((left, right) =>
+      left.localeCompare(right, undefined, { numeric: true }),
+    );
+    await database
+      .prepare(
+        `UPDATE sources SET manual_entries = ?, cached_entries = ?,
+           entry_count = ?, last_checked_at = CURRENT_TIMESTAMP,
+           last_success_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+      )
+      .bind(
+        nextEntries.join("\n"),
+        JSON.stringify(nextEntries),
+        nextEntries.length,
+        source.id,
+      )
+      .run();
+  }
+  await recordIpListChanges(database, before, [listId], "manual_unblock");
+  return { ok: true, entry };
 }

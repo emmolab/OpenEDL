@@ -12,7 +12,7 @@ export async function generateMetadata(): Promise<Metadata> {
     requestHeaders.get("x-forwarded-proto") ??
     (host.startsWith("localhost") ? "http" : "https");
   const baseUrl = new URL(`${protocol}://${host}`);
-  const title = "OpenEDL — Unified External Dynamic Lists";
+  const title = "OpenEDL";
   const description =
     "Aggregate, normalize, deduplicate, and publish vendor-neutral external dynamic lists.";
   const socialImage = new URL("/og.png", baseUrl);

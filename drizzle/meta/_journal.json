@@ -57,6 +57,20 @@
       "when": 1785240945516,
       "tag": "0007_purple_mac_gargan",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1785507813438,
+      "tag": "0008_melted_jane_foster",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1785509386295,
+      "tag": "0009_round_goliath",
+      "breakpoints": true
     }
   ]
 }

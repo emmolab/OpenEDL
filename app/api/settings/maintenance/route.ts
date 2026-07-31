@@ -1,7 +1,10 @@
 import {
   getDatabaseStats,
   getSourceSafetyLimits,
+  getVacuumSchedule,
+  updateVacuumSchedule,
   updateSourceSafetyLimits,
+  type VacuumSchedule,
   vacuumDatabase,
 } from "../../../../db/core";
 import { getManagementIdentity } from "../../../../lib/auth";
@@ -26,6 +29,7 @@ export async function GET(request: Request) {
   return Response.json({
     limits: await getSourceSafetyLimits(),
     database: await getDatabaseStats(),
+    vacuumSchedule: await getVacuumSchedule(),
   });
 }
 
@@ -36,7 +40,13 @@ export async function PATCH(request: Request) {
     const payload = (await request.json()) as {
       remoteSourceMaxMb?: number;
       apiSourceMaxMb?: number;
+      vacuumSchedule?: VacuumSchedule;
     };
+    if (payload.vacuumSchedule !== undefined) {
+      return Response.json({
+        vacuumSchedule: await updateVacuumSchedule(payload.vacuumSchedule),
+      });
+    }
     await updateSourceSafetyLimits({
       remoteSourceMaxMb: payload.remoteSourceMaxMb ?? Number.NaN,
       apiSourceMaxMb: payload.apiSourceMaxMb ?? Number.NaN,

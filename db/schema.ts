@@ -158,6 +158,38 @@ export const appSettings = sqliteTable("app_settings", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const blockAuditEvents = sqliteTable(
+  "block_audit_events",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    listId: integer("list_id")
+      .notNull()
+      .references(() => edlLists.id, { onDelete: "cascade" }),
+    entry: text("entry").notNull(),
+    action: text("action", { enum: ["blocked", "unblocked"] }).notNull(),
+    reason: text("reason").notNull().default("source_refresh"),
+    occurredAt: text("occurred_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("block_audit_list_time_idx").on(table.listId, table.occurredAt),
+    index("block_audit_entry_idx").on(table.entry),
+  ],
+);
+
+export const lifetimeBlockedEntries = sqliteTable(
+  "lifetime_blocked_entries",
+  {
+    entry: text("entry").primaryKey(),
+    firstSeenAt: text("first_seen_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    lastSeenAt: text("last_seen_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("lifetime_blocks_last_seen_idx").on(table.lastSeenAt)],
+);
+
 export const listSources = sqliteTable(
   "list_sources",
   {

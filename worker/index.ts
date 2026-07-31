@@ -1,7 +1,7 @@
 /** Cloudflare Workers entry point for OpenEDL. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
-import { refreshDueSources } from "../db/core";
+import { refreshDueSources, runScheduledMaintenance } from "../db/core";
 
 interface Env {
   ASSETS: Fetcher;
@@ -48,7 +48,12 @@ const worker = {
     env: Env,
     ctx: ExecutionContext,
   ) {
-    ctx.waitUntil(refreshDueSources(env.DB));
+    ctx.waitUntil(
+      refreshDueSources(env.DB).then(async (refresh) => ({
+        refresh,
+        maintenance: await runScheduledMaintenance(env.DB),
+      })),
+    );
   },
 };
 

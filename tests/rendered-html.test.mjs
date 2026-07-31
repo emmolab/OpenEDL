@@ -63,10 +63,13 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
   );
   assert.match(dashboard, /Maintenance/);
   assert.match(maintenance, /Run database VACUUM/);
+  assert.match(maintenance, /Run VACUUM now\?/);
+  assert.match(maintenance, /className="confirm-dialog"/);
+  assert.doesNotMatch(maintenance, /window\.confirm/);
   assert.match(maintenance, /Authenticated API feed limit/);
   assert.match(maintenanceRoute, /Administrator access is required/);
   assert.match(maintenanceRoute, /vacuumDatabase/);
-  assert.match(layout, /OpenEDL — Unified External Dynamic Lists/);
+  assert.match(layout, /const title = "OpenEDL"/);
   assert.match(layout, /openGraph/);
   assert.match(auth, /code_challenge_method", "S256"/);
   assert.match(auth, /payload\.nonce !== challenge\.nonce/);

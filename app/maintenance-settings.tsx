@@ -19,6 +19,17 @@ type DatabaseStats = {
 type MaintenanceData = {
   limits: Limits;
   database: DatabaseStats;
+  vacuumSchedule: VacuumScheduleSettings;
+};
+
+type VacuumSchedule = "disabled" | "daily" | "weekly" | "monthly";
+
+type VacuumScheduleSettings = {
+  schedule: VacuumSchedule;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastStatus: "never" | "success" | "failed";
+  lastError: string | null;
 };
 
 type Props = {
@@ -38,13 +49,28 @@ function formatBytes(value: number) {
   return `${size.toFixed(size >= 100 ? 0 : size >= 10 ? 1 : 2)} ${unit}`;
 }
 
+function dateLabel(value: string | null) {
+  if (!value) return "Not scheduled";
+  const date = new Date(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
+  return Number.isNaN(date.getTime())
+    ? "Unknown"
+    : new Intl.DateTimeFormat("en", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(date);
+}
+
 export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
   const [data, setData] = useState<MaintenanceData | null>(null);
   const [remoteLimit, setRemoteLimit] = useState(2);
   const [apiLimit, setApiLimit] = useState(20);
+  const [vacuumSchedule, setVacuumSchedule] =
+    useState<VacuumSchedule>("disabled");
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isVacuuming, setIsVacuuming] = useState(false);
+  const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+  const [showVacuumConfirmation, setShowVacuumConfirmation] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -60,6 +86,7 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
       setData(payload);
       setRemoteLimit(payload.limits.remoteSourceMaxMb);
       setApiLimit(payload.limits.apiSourceMaxMb);
+      setVacuumSchedule(payload.vacuumSchedule.schedule);
       setError("");
     } catch (loadError) {
       setError(
@@ -73,6 +100,15 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
   useEffect(() => {
     queueMicrotask(() => void load());
   }, [load]);
+
+  useEffect(() => {
+    if (!showVacuumConfirmation) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setShowVacuumConfirmation(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [showVacuumConfirmation]);
 
   async function saveLimits(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -109,10 +145,7 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
   }
 
   async function vacuum() {
-    const confirmed = window.confirm(
-      "Compact the OpenEDL database now? Refreshes and management writes may pause while VACUUM runs. Back up production data first.",
-    );
-    if (!confirmed) return;
+    setShowVacuumConfirmation(false);
     setIsVacuuming(true);
     setError("");
     try {
@@ -142,6 +175,43 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
       );
     } finally {
       setIsVacuuming(false);
+    }
+  }
+
+  async function saveVacuumSchedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSavingSchedule(true);
+    setError("");
+    try {
+      const response = await apiFetch("/api/settings/maintenance", {
+        method: "PATCH",
+        body: JSON.stringify({ vacuumSchedule }),
+      });
+      const payload = (await response.json()) as {
+        vacuumSchedule?: VacuumScheduleSettings;
+        error?: string;
+      };
+      if (!response.ok || !payload.vacuumSchedule) {
+        throw new Error(payload.error ?? "Unable to save VACUUM schedule.");
+      }
+      setData((current) =>
+        current
+          ? { ...current, vacuumSchedule: payload.vacuumSchedule as VacuumScheduleSettings }
+          : current,
+      );
+      setNotice(
+        vacuumSchedule === "disabled"
+          ? "Scheduled database VACUUM disabled."
+          : `Database VACUUM scheduled ${vacuumSchedule}.`,
+      );
+    } catch (scheduleError) {
+      setError(
+        scheduleError instanceof Error
+          ? scheduleError.message
+          : "Unable to save VACUUM schedule.",
+      );
+    } finally {
+      setIsSavingSchedule(false);
     }
   }
 
@@ -276,14 +346,97 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
             <button
               className="secondary-button"
               type="button"
-              onClick={vacuum}
+              onClick={() => setShowVacuumConfirmation(true)}
               disabled={isVacuuming || !data || !data.database.available}
             >
               {isVacuuming ? "Compacting…" : "Run database VACUUM"}
             </button>
           </div>
+          <form className="vacuum-schedule" onSubmit={saveVacuumSchedule}>
+            <div className="field">
+              <label htmlFor="vacuum-schedule">Automatic VACUUM</label>
+              <select
+                id="vacuum-schedule"
+                value={vacuumSchedule}
+                onChange={(event) =>
+                  setVacuumSchedule(event.target.value as VacuumSchedule)
+                }
+              >
+                <option value="disabled">Disabled</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+              <small>
+                Next run: {dateLabel(data?.vacuumSchedule.nextRunAt ?? null)}
+                {data?.vacuumSchedule.lastRunAt
+                  ? ` · Last ${data.vacuumSchedule.lastStatus}: ${dateLabel(data.vacuumSchedule.lastRunAt)}`
+                  : ""}
+              </small>
+              {data?.vacuumSchedule.lastError && (
+                <small className="schedule-error">
+                  Last error: {data.vacuumSchedule.lastError}
+                </small>
+              )}
+            </div>
+            <button
+              className="secondary-button"
+              type="submit"
+              disabled={isSavingSchedule}
+            >
+              {isSavingSchedule ? "Saving…" : "Save VACUUM schedule"}
+            </button>
+          </form>
         </article>
       </section>
+
+      {showVacuumConfirmation && (
+        <div
+          className="drawer-backdrop confirm-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowVacuumConfirmation(false);
+            }
+          }}
+        >
+          <section
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="vacuum-confirm-title"
+            aria-describedby="vacuum-confirm-description"
+          >
+            <div className="confirm-icon" aria-hidden="true">
+              ⌁
+            </div>
+            <p className="eyebrow">Database maintenance</p>
+            <h2 id="vacuum-confirm-title">Run VACUUM now?</h2>
+            <p id="vacuum-confirm-description">
+              OpenEDL will rebuild the SQLite database to reclaim unused space.
+              Refreshes and management writes may pause until it finishes, so
+              make sure production data is backed up first.
+            </p>
+            <div className="confirm-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => setShowVacuumConfirmation(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                autoFocus
+                onClick={() => void vacuum()}
+              >
+                Run database VACUUM
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </>
   );
 }

@@ -92,6 +92,8 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
     `${baseUrl}/api/settings/maintenance`,
   );
   assert.equal(unauthorizedMaintenance.status, 401);
+  const unauthorizedAudit = await fetch(`${baseUrl}/api/audit/blocks`);
+  assert.equal(unauthorizedAudit.status, 401);
 
   const initialStatus = await fetch(`${baseUrl}/api/setup`);
   assert.equal(initialStatus.status, 200);
@@ -164,6 +166,43 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
     (candidate) => candidate.kind === "remote",
   );
   assert.ok(source?.id);
+
+  const auditResponse = await fetch(`${baseUrl}/api/audit/blocks`, {
+    headers: { cookie },
+  });
+  assert.equal(auditResponse.status, 200);
+  const initialAudit = await auditResponse.json();
+  assert.ok(initialAudit.activeCount > 0);
+  assert.ok(initialAudit.active.length > 0);
+  assert.ok(initialAudit.allTimeBlockedCount >= initialAudit.activeCount);
+  assert.match(initialAudit.note, /per-connection enforcement events/);
+  const entryToUnblock = initialAudit.active[0];
+
+  const unblockResponse = await fetch(`${baseUrl}/api/audit/blocks`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({
+      action: "unblock",
+      listId: entryToUnblock.listId,
+      entry: entryToUnblock.entry,
+    }),
+  });
+  assert.equal(unblockResponse.status, 200);
+
+  const searchedAuditResponse = await fetch(
+    `${baseUrl}/api/audit/blocks?q=${encodeURIComponent(entryToUnblock.entry)}`,
+    { headers: { cookie } },
+  );
+  assert.equal(searchedAuditResponse.status, 200);
+  const searchedAudit = await searchedAuditResponse.json();
+  assert.equal(searchedAudit.active.length, 0);
+  assert.equal(searchedAudit.events[0].entry, entryToUnblock.entry);
+  assert.equal(searchedAudit.events[0].action, "unblocked");
+  assert.equal(searchedAudit.events[0].reason, "manual_unblock");
+  assert.equal(
+    searchedAudit.allTimeBlockedCount,
+    initialAudit.allTimeBlockedCount,
+  );
 
   const updateSourceResponse = await fetch(
     `${baseUrl}/api/sources/${source.id}`,
@@ -248,6 +287,26 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
   assert.equal(maintenance.database.available, true);
   assert.ok(maintenance.database.sizeBytes > 0);
   assert.ok(maintenance.database.pageCount > 0);
+  assert.deepEqual(maintenance.vacuumSchedule, {
+    schedule: "disabled",
+    nextRunAt: null,
+    lastRunAt: null,
+    lastStatus: "never",
+    lastError: null,
+  });
+
+  const scheduleVacuumResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    {
+      method: "PATCH",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ vacuumSchedule: "weekly" }),
+    },
+  );
+  assert.equal(scheduleVacuumResponse.status, 200);
+  const scheduledVacuum = await scheduleVacuumResponse.json();
+  assert.equal(scheduledVacuum.vacuumSchedule.schedule, "weekly");
+  assert.ok(Date.parse(scheduledVacuum.vacuumSchedule.nextRunAt) > Date.now());
 
   const updateLimitsResponse = await fetch(
     `${baseUrl}/api/settings/maintenance`,
@@ -289,4 +348,14 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
   assert.ok(vacuum.before.sizeBytes > 0);
   assert.ok(vacuum.after.sizeBytes > 0);
   assert.ok(vacuum.reclaimedBytes >= 0);
+
+  const auditAfterVacuumResponse = await fetch(`${baseUrl}/api/audit/blocks`, {
+    headers: { cookie },
+  });
+  assert.equal(auditAfterVacuumResponse.status, 200);
+  const auditAfterVacuum = await auditAfterVacuumResponse.json();
+  assert.equal(
+    auditAfterVacuum.allTimeBlockedCount,
+    initialAudit.allTimeBlockedCount,
+  );
 });

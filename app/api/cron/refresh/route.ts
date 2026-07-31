@@ -1,5 +1,8 @@
 import { env } from "cloudflare:workers";
-import { refreshDueSources } from "../../../../db/core";
+import {
+  refreshDueSources,
+  runScheduledMaintenance,
+} from "../../../../db/core";
 
 type CronEnv = {
   CRON_SECRET?: string;
@@ -19,5 +22,7 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid cron token." }, { status: 401 });
   }
 
-  return Response.json(await refreshDueSources());
+  const refresh = await refreshDueSources();
+  const maintenance = await runScheduledMaintenance();
+  return Response.json({ ...refresh, maintenance });
 }
