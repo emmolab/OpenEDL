@@ -1,11 +1,18 @@
 "use client";
 
-type AppTheme = "signal" | "ocean" | "ember" | "midnight";
+import { FormEvent, useState } from "react";
+import {
+  DEFAULT_CUSTOM_THEME,
+  type AppTheme,
+  type CustomThemeColors,
+} from "../lib/appearance";
 
 type Props = {
   apiFetch: (path: string, init?: RequestInit) => Promise<Response>;
   theme: AppTheme;
+  customTheme: CustomThemeColors;
   onThemeChange: (theme: AppTheme) => void;
+  onCustomThemeChange: (theme: CustomThemeColors) => void;
   setNotice: (message: string) => void;
 };
 
@@ -36,12 +43,30 @@ const themes = [
   },
 ] as const;
 
+const customColorFields: Array<{
+  key: keyof CustomThemeColors;
+  label: string;
+  description: string;
+}> = [
+  { key: "navigation", label: "Navigation", description: "Sidebar and buttons" },
+  { key: "accent", label: "Accent", description: "Highlights and active states" },
+  { key: "background", label: "Background", description: "Page canvas" },
+  { key: "surface", label: "Surface", description: "Panels and controls" },
+  { key: "text", label: "Text", description: "Primary copy" },
+  { key: "muted", label: "Muted text", description: "Labels and supporting copy" },
+];
+
 export function AppearanceSettings({
   apiFetch,
   theme,
+  customTheme,
   onThemeChange,
+  onCustomThemeChange,
   setNotice,
 }: Props) {
+  const [draft, setDraft] = useState(customTheme);
+  const [isSaving, setIsSaving] = useState(false);
+
   async function selectTheme(nextTheme: AppTheme) {
     const previousTheme = theme;
     onThemeChange(nextTheme);
@@ -52,12 +77,14 @@ export function AppearanceSettings({
       });
       const payload = (await response.json()) as {
         theme?: AppTheme;
+        customTheme?: CustomThemeColors;
         error?: string;
       };
       if (!response.ok || !payload.theme) {
         throw new Error(payload.error ?? "Unable to update application theme.");
       }
       onThemeChange(payload.theme);
+      if (payload.customTheme) onCustomThemeChange(payload.customTheme);
       setNotice("Application theme updated for every user.");
     } catch (error) {
       onThemeChange(previousTheme);
@@ -68,6 +95,41 @@ export function AppearanceSettings({
       );
     }
   }
+
+  async function saveCustomTheme(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSaving(true);
+    try {
+      const response = await apiFetch("/api/settings/appearance", {
+        method: "PATCH",
+        body: JSON.stringify({ theme: "custom", customTheme: draft }),
+      });
+      const payload = (await response.json()) as {
+        theme?: AppTheme;
+        customTheme?: CustomThemeColors;
+        error?: string;
+      };
+      if (!response.ok || !payload.theme || !payload.customTheme) {
+        throw new Error(payload.error ?? "Unable to save the custom theme.");
+      }
+      onCustomThemeChange(payload.customTheme);
+      onThemeChange(payload.theme);
+      setDraft(payload.customTheme);
+      setNotice("Custom theme saved and applied for every user.");
+    } catch (error) {
+      setNotice(
+        error instanceof Error ? error.message : "Unable to save the custom theme.",
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  const customPreview = [
+    customTheme.navigation,
+    customTheme.accent,
+    customTheme.background,
+  ];
 
   return (
     <>
@@ -80,8 +142,8 @@ export function AppearanceSettings({
             <em>theme.</em>
           </h1>
           <p className="heading-copy">
-            Choose the palette used across the dashboard and sign-in page for
-            every OpenEDL user.
+            Choose or create the palette used across the dashboard and sign-in
+            page for every OpenEDL user.
           </p>
         </div>
       </section>
@@ -112,9 +174,78 @@ export function AppearanceSettings({
               <b>{theme === option.id ? "Current theme" : "Use theme"}</b>
             </button>
           ))}
+          <button
+            className={theme === "custom" ? "active" : ""}
+            type="button"
+            onClick={() => selectTheme("custom")}
+          >
+            <span className="appearance-preview">
+              {customPreview.map((color, index) => (
+                <i style={{ background: color }} key={`${color}-${index}`} />
+              ))}
+            </span>
+            <strong>Custom</strong>
+            <small>Your own shared palette, configured below.</small>
+            <b>{theme === "custom" ? "Current theme" : "Use theme"}</b>
+          </button>
         </div>
-      </section>
 
+        <form className="custom-theme-form" onSubmit={saveCustomTheme}>
+          <div className="custom-theme-heading">
+            <div>
+              <p className="eyebrow">Custom palette</p>
+              <h3>Choose your colours</h3>
+              <p>
+                OpenEDL derives borders, hover states, and contrast colours from
+                these six values.
+              </p>
+            </div>
+            <span
+              className="custom-theme-sample"
+              style={{
+                background: draft.navigation,
+                color: draft.accent,
+                borderColor: draft.accent,
+              }}
+            >
+              EDL <i style={{ background: draft.accent }} />
+            </span>
+          </div>
+          <div className="custom-color-grid">
+            {customColorFields.map((field) => (
+              <label className="custom-color-field" key={field.key}>
+                <input
+                  type="color"
+                  value={draft[field.key]}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      [field.key]: event.target.value,
+                    }))
+                  }
+                />
+                <span>
+                  <strong>{field.label}</strong>
+                  <small>{field.description}</small>
+                </span>
+                <code>{draft[field.key].toUpperCase()}</code>
+              </label>
+            ))}
+          </div>
+          <div className="custom-theme-actions">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => setDraft(DEFAULT_CUSTOM_THEME)}
+            >
+              Reset palette
+            </button>
+            <button className="primary-button" type="submit" disabled={isSaving}>
+              {isSaving ? "Saving…" : "Save & apply custom theme"}
+            </button>
+          </div>
+        </form>
+      </section>
     </>
   );
 }

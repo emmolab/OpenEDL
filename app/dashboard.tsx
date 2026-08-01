@@ -1,6 +1,15 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  contrastingTextColor,
+  DEFAULT_CUSTOM_THEME,
+  isAppTheme,
+  isDarkColor,
+  parseCustomThemeColors,
+  type AppTheme,
+  type CustomThemeColors,
+} from "../lib/appearance";
 import { AppearanceSettings } from "./appearance-settings";
 import { BlockAudit } from "./block-audit";
 import { InitialSetup } from "./initial-setup";
@@ -80,8 +89,6 @@ type ManagementUser = {
   provider: string;
   role: "admin" | "member";
 };
-
-type AppTheme = "signal" | "ocean" | "ember" | "midnight";
 
 const emptyForm: SourceForm = {
   name: "",
@@ -172,9 +179,17 @@ export function Dashboard() {
   const [appTheme, setAppTheme] = useState<AppTheme>(() => {
     if (typeof window === "undefined") return "signal";
     const saved = window.localStorage.getItem("openedl-app-theme");
-    return saved === "ocean" || saved === "ember" || saved === "midnight"
-      ? saved
-      : "signal";
+    return isAppTheme(saved) ? saved : "signal";
+  });
+  const [customTheme, setCustomTheme] = useState<CustomThemeColors>(() => {
+    if (typeof window === "undefined") return DEFAULT_CUSTOM_THEME;
+    const saved = window.localStorage.getItem("openedl-custom-theme");
+    if (!saved) return DEFAULT_CUSTOM_THEME;
+    try {
+      return parseCustomThemeColors(JSON.parse(saved)) ?? DEFAULT_CUSTOM_THEME;
+    } catch {
+      return DEFAULT_CUSTOM_THEME;
+    }
   });
   const [localEmail, setLocalEmail] = useState("");
   const [localPassword, setLocalPassword] = useState("");
@@ -302,10 +317,13 @@ export function Dashboard() {
             async (response) =>
               (await response.json()) as {
                 theme?: AppTheme;
+                customTheme?: CustomThemeColors;
               },
           )
           .then((payload) => {
-            if (payload.theme) setAppTheme(payload.theme);
+            if (isAppTheme(payload.theme)) setAppTheme(payload.theme);
+            const colors = parseCustomThemeColors(payload.customTheme);
+            if (colors) setCustomTheme(colors);
           }),
       ]);
     });
@@ -318,9 +336,33 @@ export function Dashboard() {
   }, [notice]);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = appTheme;
+    const root = document.documentElement;
+    root.dataset.theme = appTheme;
+    root.dataset.themeMode =
+      appTheme === "midnight" ||
+      (appTheme === "custom" && isDarkColor(customTheme.background))
+        ? "dark"
+        : "light";
+    root.style.setProperty("--custom-navigation", customTheme.navigation);
+    root.style.setProperty("--custom-accent", customTheme.accent);
+    root.style.setProperty("--custom-background", customTheme.background);
+    root.style.setProperty("--custom-surface", customTheme.surface);
+    root.style.setProperty("--custom-text", customTheme.text);
+    root.style.setProperty("--custom-muted", customTheme.muted);
+    root.style.setProperty(
+      "--custom-on-navigation",
+      contrastingTextColor(customTheme.navigation),
+    );
+    root.style.setProperty(
+      "--custom-on-accent",
+      contrastingTextColor(customTheme.accent),
+    );
     window.localStorage.setItem("openedl-app-theme", appTheme);
-  }, [appTheme]);
+    window.localStorage.setItem(
+      "openedl-custom-theme",
+      JSON.stringify(customTheme),
+    );
+  }, [appTheme, customTheme]);
 
   const list = data?.lists[0] ?? null;
   const endpoint = list ? `${origin}/edl/${list.slug}` : "";
@@ -997,9 +1039,12 @@ export function Dashboard() {
           ) : activeView === "appearance" &&
             currentUser?.role === "admin" ? (
             <AppearanceSettings
+              key={Object.values(customTheme).join("-")}
               apiFetch={apiFetch}
               theme={appTheme}
+              customTheme={customTheme}
               onThemeChange={setAppTheme}
+              onCustomThemeChange={setCustomTheme}
               setNotice={setNotice}
             />
           ) : activeView === "maintenance" &&

@@ -82,7 +82,9 @@ export const authUsers = sqliteTable(
     role: text("role", { enum: ["admin", "member"] })
       .notNull()
       .default("member"),
-    theme: text("theme", { enum: ["signal", "ocean", "ember"] })
+    theme: text("theme", {
+      enum: ["signal", "ocean", "ember", "midnight", "custom"],
+    })
       .notNull()
       .default("signal"),
     active: integer("active", { mode: "boolean" }).notNull().default(true),

@@ -157,6 +157,63 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
   assert.equal(session.user.email, "admin@example.com");
   assert.equal(session.user.role, "admin");
 
+  const defaultAppearanceResponse = await fetch(
+    `${baseUrl}/api/settings/appearance`,
+  );
+  assert.equal(defaultAppearanceResponse.status, 200);
+  const defaultAppearance = await defaultAppearanceResponse.json();
+  assert.equal(defaultAppearance.theme, "signal");
+  assert.match(defaultAppearance.customTheme.navigation, /^#[0-9a-f]{6}$/);
+
+  const unauthorizedAppearanceUpdate = await fetch(
+    `${baseUrl}/api/settings/appearance`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ theme: "custom" }),
+    },
+  );
+  assert.equal(unauthorizedAppearanceUpdate.status, 401);
+
+  const customTheme = {
+    navigation: "#182848",
+    accent: "#ffca3a",
+    background: "#f4f7fb",
+    surface: "#ffffff",
+    text: "#162033",
+    muted: "#68748a",
+  };
+  const appearanceUpdate = await fetch(`${baseUrl}/api/settings/appearance`, {
+    method: "PATCH",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ theme: "custom", customTheme }),
+  });
+  assert.equal(appearanceUpdate.status, 200);
+  assert.deepEqual(await appearanceUpdate.json(), {
+    theme: "custom",
+    customTheme,
+  });
+
+  const savedAppearanceResponse = await fetch(
+    `${baseUrl}/api/settings/appearance`,
+  );
+  assert.deepEqual(await savedAppearanceResponse.json(), {
+    theme: "custom",
+    customTheme,
+  });
+
+  const invalidAppearanceUpdate = await fetch(
+    `${baseUrl}/api/settings/appearance`,
+    {
+      method: "PATCH",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        customTheme: { ...customTheme, accent: "not-a-colour" },
+      }),
+    },
+  );
+  assert.equal(invalidAppearanceUpdate.status, 400);
+
   const authenticatedDashboard = await fetch(`${baseUrl}/api/dashboard`, {
     headers: { cookie },
   });

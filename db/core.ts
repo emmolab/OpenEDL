@@ -14,13 +14,18 @@ import {
   encryptConfigSecret,
 } from "../lib/config-secrets";
 import { logError, logInfo } from "../lib/logging";
+import {
+  DEFAULT_CUSTOM_THEME,
+  isAppTheme,
+  parseCustomThemeColors,
+  type AppTheme,
+  type CustomThemeColors,
+} from "../lib/appearance";
 
 type RuntimeEnv = {
   DB?: D1Database;
   CONFIG_ENCRYPTION_KEY?: string;
 };
-
-export type AppTheme = "signal" | "ocean" | "ember" | "midnight";
 
 export type SourceSafetyLimits = {
   remoteSourceMaxMb: number;
@@ -171,7 +176,7 @@ async function createSchema(database: D1Database) {
           name TEXT NOT NULL,
           picture TEXT,
           role TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('admin', 'member')),
-          theme TEXT NOT NULL DEFAULT 'signal' CHECK(theme IN ('signal', 'ocean', 'ember')),
+          theme TEXT NOT NULL DEFAULT 'signal' CHECK(theme IN ('signal', 'ocean', 'ember', 'midnight', 'custom')),
           active INTEGER NOT NULL DEFAULT 1,
           password_hash TEXT,
           password_salt TEXT,
@@ -588,13 +593,11 @@ export async function getAppTheme(): Promise<AppTheme> {
   const row = await getD1()
     .prepare("SELECT value FROM app_settings WHERE key = 'app_theme'")
     .first<{ value: string }>();
-  return ["signal", "ocean", "ember", "midnight"].includes(row?.value ?? "")
-    ? (row?.value as AppTheme)
-    : "signal";
+  return isAppTheme(row?.value) ? row.value : "signal";
 }
 
 export async function updateAppTheme(theme: string) {
-  if (!["signal", "ocean", "ember", "midnight"].includes(theme)) {
+  if (!isAppTheme(theme)) {
     throw new Error("Invalid application theme.");
   }
   await ensureDatabase();
@@ -608,6 +611,38 @@ export async function updateAppTheme(theme: string) {
     )
     .bind(theme)
     .run();
+}
+
+export async function getCustomTheme(): Promise<CustomThemeColors> {
+  await ensureDatabase();
+  const row = await getD1()
+    .prepare("SELECT value FROM app_settings WHERE key = 'app_custom_theme'")
+    .first<{ value: string }>();
+  if (!row?.value) return DEFAULT_CUSTOM_THEME;
+  try {
+    return parseCustomThemeColors(JSON.parse(row.value)) ?? DEFAULT_CUSTOM_THEME;
+  } catch {
+    return DEFAULT_CUSTOM_THEME;
+  }
+}
+
+export async function updateCustomTheme(value: unknown) {
+  const customTheme = parseCustomThemeColors(value);
+  if (!customTheme) {
+    throw new Error("Every custom theme colour must be a six-digit hex value.");
+  }
+  await ensureDatabase();
+  await getD1()
+    .prepare(
+      `INSERT INTO app_settings (key, value, updated_at)
+       VALUES ('app_custom_theme', ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET
+         value = excluded.value,
+         updated_at = CURRENT_TIMESTAMP`,
+    )
+    .bind(JSON.stringify(customTheme))
+    .run();
+  return customTheme;
 }
 
 export async function getSourceSafetyLimits(
