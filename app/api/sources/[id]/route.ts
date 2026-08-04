@@ -4,7 +4,7 @@ import {
   updateRemoteSource,
   updateSourceSchedule,
 } from "../../../../db/core";
-import { isManagementAuthorized } from "../../../../lib/auth";
+import { requireAdministrator } from "../../../../lib/auth";
 import {
   assertSafeSourceUrl,
   type SourceFormat,
@@ -18,9 +18,8 @@ export async function DELETE(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
-  if (!(await isManagementAuthorized(request))) {
-    return Response.json({ error: "Sign-in required." }, { status: 401 });
-  }
+  const authorizationError = await requireAdministrator(request);
+  if (authorizationError) return authorizationError;
 
   const { id } = await context.params;
   const sourceId = Number(id);
@@ -46,9 +45,8 @@ export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
-  if (!(await isManagementAuthorized(request))) {
-    return Response.json({ error: "Sign-in required." }, { status: 401 });
-  }
+  const authorizationError = await requireAdministrator(request);
+  if (authorizationError) return authorizationError;
 
   const { id } = await context.params;
   const sourceId = Number(id);

@@ -1073,6 +1073,20 @@ export async function isUserAdministrator(request: Request) {
   return (await getManagementIdentity(request))?.role === "admin";
 }
 
+export async function requireAdministrator(request: Request) {
+  const identity = await getManagementIdentity(request);
+  if (!identity) {
+    return Response.json({ error: "Sign-in required." }, { status: 401 });
+  }
+  if (identity.role !== "admin") {
+    return Response.json(
+      { error: "Administrator access is required." },
+      { status: 403 },
+    );
+  }
+  return null;
+}
+
 export async function updateOwnProfile(
   request: Request,
   identity: ManagementIdentity,

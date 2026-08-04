@@ -1,15 +1,14 @@
 import {
   refreshSource,
 } from "../../../../../db/core";
-import { isManagementAuthorized } from "../../../../../lib/auth";
+import { requireAdministrator } from "../../../../../lib/auth";
 
 export async function POST(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
-  if (!(await isManagementAuthorized(request))) {
-    return Response.json({ error: "Sign-in required." }, { status: 401 });
-  }
+  const authorizationError = await requireAdministrator(request);
+  if (authorizationError) return authorizationError;
 
   const { id } = await context.params;
   const sourceId = Number(id);

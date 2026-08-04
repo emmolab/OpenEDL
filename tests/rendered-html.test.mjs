@@ -16,6 +16,9 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
     maintenanceRoute,
     ssoSettings,
     sourceRoute,
+    nextConfig,
+    proxy,
+    securityHeaders,
   ] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/dashboard.tsx", import.meta.url), "utf8"),
@@ -35,6 +38,9 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
       new URL("../app/api/sources/[id]/route.ts", import.meta.url),
       "utf8",
     ),
+    readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../proxy.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/security-headers.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /<Dashboard \/>/);
@@ -56,6 +62,15 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
     /Leave blank to keep the existing encrypted credential/,
   );
   assert.match(sourceRoute, /updateRemoteSource/);
+  assert.match(sourceRoute, /requireAdministrator/);
+  assert.match(dashboard, /canManage && showAddSource/);
+  assert.match(nextConfig, /SECURITY_HEADERS/);
+  assert.match(proxy, /NextResponse\.next/);
+  assert.match(proxy, /SECURITY_HEADERS/);
+  assert.match(securityHeaders, /Content-Security-Policy/);
+  assert.match(securityHeaders, /Strict-Transport-Security/);
+  assert.match(securityHeaders, /X-Content-Type-Options/);
+  assert.match(securityHeaders, /script-src-attr 'none'/);
   assert.match(ssoSettings, /Directory \(tenant\) ID/);
   assert.match(
     ssoSettings,

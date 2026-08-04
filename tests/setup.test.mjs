@@ -42,7 +42,7 @@ async function waitForServer(baseUrl, child, output) {
 }
 
 test("first-run setup ignores legacy bootstrap variables, creates one administrator, and signs them in", {
-  timeout: 30_000,
+  timeout: 45_000,
 }, async (context) => {
   const workingDirectory = await mkdtemp(join(tmpdir(), "openedl-setup-"));
   const port = await availablePort();
@@ -86,6 +86,36 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
 
   await waitForServer(baseUrl, child, () => logs);
 
+  const pageResponse = await fetch(baseUrl);
+  assert.equal(pageResponse.status, 200);
+  assert.match(
+    pageResponse.headers.get("content-security-policy") ?? "",
+    /frame-ancestors 'none'/,
+  );
+  assert.match(
+    pageResponse.headers.get("content-security-policy") ?? "",
+    /default-src 'none'/,
+  );
+  assert.match(
+    pageResponse.headers.get("content-security-policy") ?? "",
+    /script-src-attr 'none'/,
+  );
+  assert.match(
+    pageResponse.headers.get("content-security-policy") ?? "",
+    /upgrade-insecure-requests/,
+  );
+  assert.equal(
+    pageResponse.headers.get("strict-transport-security"),
+    "max-age=31536000; includeSubDomains",
+  );
+  assert.equal(pageResponse.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(pageResponse.headers.get("x-frame-options"), "DENY");
+  assert.equal(pageResponse.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(
+    pageResponse.headers.get("permissions-policy"),
+    "camera=(), display-capture=(), geolocation=(), microphone=(), payment=(), usb=()",
+  );
+
   const unauthorizedDashboard = await fetch(`${baseUrl}/api/dashboard`);
   assert.equal(unauthorizedDashboard.status, 401);
   const unauthorizedMaintenance = await fetch(
@@ -94,6 +124,12 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
   assert.equal(unauthorizedMaintenance.status, 401);
   const unauthorizedAudit = await fetch(`${baseUrl}/api/audit/blocks`);
   assert.equal(unauthorizedAudit.status, 401);
+  const unauthorizedSourceMutation = await fetch(`${baseUrl}/api/sources`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(unauthorizedSourceMutation.status, 401);
 
   const initialStatus = await fetch(`${baseUrl}/api/setup`);
   assert.equal(initialStatus.status, 200);
@@ -223,6 +259,199 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
     (candidate) => candidate.kind === "remote",
   );
   assert.ok(source?.id);
+  const listId = initialDashboard.lists[0].id;
+  const listSlug = initialDashboard.lists[0].slug;
+
+  const publishedListResponse = await fetch(`${baseUrl}/edl/${listSlug}`);
+  assert.equal(publishedListResponse.status, 200);
+  assert.match(
+    publishedListResponse.headers.get("content-type") ?? "",
+    /^text\/plain/,
+  );
+  assert.match(
+    publishedListResponse.headers.get("content-security-policy") ?? "",
+    /frame-ancestors 'none'/,
+  );
+  assert.equal(
+    publishedListResponse.headers.get("strict-transport-security"),
+    "max-age=31536000; includeSubDomains",
+  );
+  assert.equal(
+    publishedListResponse.headers.get("x-content-type-options"),
+    "nosniff",
+  );
+  const publishedListBody = await publishedListResponse.text();
+  assert.ok(publishedListBody.trim().split("\n").length > 0);
+
+  const publishedListHeadResponse = await fetch(
+    `${baseUrl}/edl/${listSlug}`,
+    { method: "HEAD" },
+  );
+  assert.equal(publishedListHeadResponse.status, 200);
+  assert.match(
+    publishedListHeadResponse.headers.get("content-security-policy") ?? "",
+    /default-src 'none'/,
+  );
+  assert.equal(await publishedListHeadResponse.text(), "");
+
+  const unsupportedListPost = await fetch(`${baseUrl}/api/lists/999999`, {
+    method: "POST",
+  });
+  assert.equal(unsupportedListPost.status, 405);
+
+  const createMemberResponse = await fetch(`${baseUrl}/api/users`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({
+      name: "Read only member",
+      email: "member@example.com",
+      password: "member password is secure",
+      role: "member",
+    }),
+  });
+  assert.equal(createMemberResponse.status, 201);
+
+  const memberLoginResponse = await fetch(`${baseUrl}/api/auth/local`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "member@example.com",
+      password: "member password is secure",
+    }),
+  });
+  assert.equal(memberLoginResponse.status, 200);
+  const memberCookie = memberLoginResponse.headers
+    .get("set-cookie")
+    ?.split(";", 1)[0];
+  assert.match(memberCookie ?? "", /^openedl_session=/);
+
+  const memberDashboardResponse = await fetch(`${baseUrl}/api/dashboard`, {
+    headers: { cookie: memberCookie },
+  });
+  assert.equal(memberDashboardResponse.status, 200);
+  const memberAuditResponse = await fetch(`${baseUrl}/api/audit/blocks`, {
+    headers: { cookie: memberCookie },
+  });
+  assert.equal(memberAuditResponse.status, 200);
+
+  const memberProfileResponse = await fetch(`${baseUrl}/api/profile`, {
+    method: "PATCH",
+    headers: {
+      cookie: memberCookie,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ name: "Updated member profile" }),
+  });
+  assert.equal(memberProfileResponse.status, 200);
+  assert.equal((await memberProfileResponse.json()).user.name, "Updated member profile");
+
+  const forbiddenMemberRequests = [
+    fetch(`${baseUrl}/api/users`, {
+      headers: { cookie: memberCookie },
+    }),
+    fetch(`${baseUrl}/api/settings/sso`, {
+      headers: { cookie: memberCookie },
+    }),
+    fetch(`${baseUrl}/api/settings/maintenance`, {
+      headers: { cookie: memberCookie },
+    }),
+    fetch(`${baseUrl}/api/sources`, {
+      method: "POST",
+      headers: {
+        cookie: memberCookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    }),
+    fetch(`${baseUrl}/api/sources/999999`, {
+      method: "PATCH",
+      headers: {
+        cookie: memberCookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    }),
+    fetch(`${baseUrl}/api/sources/999999`, {
+      method: "DELETE",
+      headers: { cookie: memberCookie },
+    }),
+    fetch(`${baseUrl}/api/sources/999999/refresh`, {
+      method: "POST",
+      headers: { cookie: memberCookie },
+    }),
+    fetch(`${baseUrl}/api/lists/${listId}`, {
+      method: "PATCH",
+      headers: {
+        cookie: memberCookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    }),
+    fetch(`${baseUrl}/api/lists/${listId}/refresh`, {
+      method: "POST",
+      headers: { cookie: memberCookie },
+    }),
+    fetch(`${baseUrl}/api/audit/blocks`, {
+      method: "POST",
+      headers: {
+        cookie: memberCookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    }),
+    fetch(`${baseUrl}/api/settings/appearance`, {
+      method: "PATCH",
+      headers: {
+        cookie: memberCookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    }),
+    fetch(`${baseUrl}/api/settings/maintenance`, {
+      method: "PATCH",
+      headers: {
+        cookie: memberCookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    }),
+    fetch(`${baseUrl}/api/settings/sso`, {
+      method: "POST",
+      headers: {
+        cookie: memberCookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    }),
+    fetch(`${baseUrl}/api/users`, {
+      method: "POST",
+      headers: {
+        cookie: memberCookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    }),
+    fetch(`${baseUrl}/api/users/999999`, {
+      method: "PATCH",
+      headers: {
+        cookie: memberCookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    }),
+    fetch(`${baseUrl}/api/users/999999`, {
+      method: "DELETE",
+      headers: { cookie: memberCookie },
+    }),
+  ];
+  for (const pendingResponse of forbiddenMemberRequests) {
+    const response = await pendingResponse;
+    assert.equal(response.status, 403);
+    assert.match(
+      (await response.json()).error,
+      /Administrator access is required/,
+    );
+  }
 
   const auditResponse = await fetch(`${baseUrl}/api/audit/blocks`, {
     headers: { cookie },

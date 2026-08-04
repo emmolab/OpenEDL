@@ -2,7 +2,7 @@ import {
   createSource,
   refreshSource,
 } from "../../../db/core";
-import { isManagementAuthorized } from "../../../lib/auth";
+import { requireAdministrator } from "../../../lib/auth";
 import {
   assertSafeSourceUrl,
   type EdlType,
@@ -15,9 +15,8 @@ const formats = new Set<SourceFormat>(["auto", "text", "json", "csv"]);
 const roles = new Set<SourceRole>(["include", "exclude"]);
 
 export async function POST(request: Request) {
-  if (!(await isManagementAuthorized(request))) {
-    return Response.json({ error: "Sign-in required." }, { status: 401 });
-  }
+  const authorizationError = await requireAdministrator(request);
+  if (authorizationError) return authorizationError;
 
   try {
     const payload = (await request.json()) as {

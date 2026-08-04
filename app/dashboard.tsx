@@ -365,6 +365,7 @@ export function Dashboard() {
   }, [appTheme, customTheme]);
 
   const list = data?.lists[0] ?? null;
+  const canManage = currentUser?.role === "admin";
   const endpoint = list ? `${origin}/edl/${list.slug}` : "";
   const activeSources =
     list?.sources.filter((source) => source.enabled).length ?? 0;
@@ -1078,14 +1079,16 @@ export function Dashboard() {
                     endpoint your security stack can trust.
                   </p>
                 </div>
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={openAddSource}
-                >
-                  <span aria-hidden="true">+</span>
-                  Add source
-                </button>
+                {canManage && (
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={openAddSource}
+                  >
+                    <span aria-hidden="true">+</span>
+                    Add source
+                  </button>
+                )}
               </section>
 
               {list && (
@@ -1152,6 +1155,7 @@ export function Dashboard() {
                       endpoint={endpoint}
                       copyEndpoint={copyEndpoint}
                       editList={() => editPublishedList(list)}
+                      canEdit={canManage}
                     />
                   ) : (
                     <section className="dashboard-grid">
@@ -1165,20 +1169,22 @@ export function Dashboard() {
                             </p>
                             <h2>Upstream sources</h2>
                           </div>
-                          <button
-                            className="secondary-button"
-                            type="button"
-                            onClick={refreshList}
-                            disabled={isRefreshing}
-                          >
-                            <span
-                              className={isRefreshing ? "spin" : ""}
-                              aria-hidden="true"
+                          {canManage && (
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              onClick={refreshList}
+                              disabled={isRefreshing}
                             >
-                              ↻
-                            </span>
-                            {isRefreshing ? "Refreshing" : "Refresh all"}
-                          </button>
+                              <span
+                                className={isRefreshing ? "spin" : ""}
+                                aria-hidden="true"
+                              >
+                                ↻
+                              </span>
+                              {isRefreshing ? "Refreshing" : "Refresh all"}
+                            </button>
+                          )}
                         </div>
 
                         <div className="source-list">
@@ -1219,6 +1225,7 @@ export function Dashboard() {
                                     )
                                   }
                                   disabled={
+                                    !canManage ||
                                     source.kind === "manual" ||
                                     busySource === source.id
                                   }
@@ -1248,54 +1255,56 @@ export function Dashboard() {
                                 </span>
                                 <small>{source.role}</small>
                               </div>
-                              <div className="row-actions">
-                                <button
-                                  type="button"
-                                  aria-label={`Refresh ${source.name}`}
-                                  title="Refresh source"
-                                  onClick={() => refreshOne(source.id)}
-                                  disabled={busySource === source.id}
-                                >
-                                  <span
-                                    className={
-                                      busySource === source.id ? "spin" : ""
-                                    }
-                                  >
-                                    ↻
-                                  </span>
-                                </button>
-                                {source.kind === "manual" ? (
+                              {canManage && (
+                                <div className="row-actions">
                                   <button
                                     type="button"
-                                    aria-label={`Edit ${source.name}`}
-                                    title="Edit manual source"
-                                    onClick={() => editManualSource(source)}
+                                    aria-label={`Refresh ${source.name}`}
+                                    title="Refresh source"
+                                    onClick={() => refreshOne(source.id)}
                                     disabled={busySource === source.id}
                                   >
-                                    ✎
+                                    <span
+                                      className={
+                                        busySource === source.id ? "spin" : ""
+                                      }
+                                    >
+                                      ↻
+                                    </span>
                                   </button>
-                                ) : (
+                                  {source.kind === "manual" ? (
+                                    <button
+                                      type="button"
+                                      aria-label={`Edit ${source.name}`}
+                                      title="Edit manual source"
+                                      onClick={() => editManualSource(source)}
+                                      disabled={busySource === source.id}
+                                    >
+                                      ✎
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      aria-label={`Edit ${source.name}`}
+                                      title="Edit remote or API source"
+                                      onClick={() => editRemoteSource(source)}
+                                      disabled={busySource === source.id}
+                                    >
+                                      ✎
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
-                                    aria-label={`Edit ${source.name}`}
-                                    title="Edit remote or API source"
-                                    onClick={() => editRemoteSource(source)}
+                                    className="danger-action"
+                                    aria-label={`Remove ${source.name}`}
+                                    title="Remove source"
+                                    onClick={() => removeSource(source)}
                                     disabled={busySource === source.id}
                                   >
-                                    ✎
+                                    ×
                                   </button>
-                                )}
-                                <button
-                                  type="button"
-                                  className="danger-action"
-                                  aria-label={`Remove ${source.name}`}
-                                  title="Remove source"
-                                  onClick={() => removeSource(source)}
-                                  disabled={busySource === source.id}
-                                >
-                                  ×
-                                </button>
-                              </div>
+                                </div>
+                              )}
                               {source.last_error && (
                                 <p className="source-error">
                                   {source.last_error}
@@ -1303,14 +1312,16 @@ export function Dashboard() {
                               )}
                             </article>
                           ))}
-                          <button
-                            type="button"
-                            className="add-row"
-                            onClick={openAddSource}
-                          >
-                            <span>+</span>
-                            Add another source
-                          </button>
+                          {canManage && (
+                            <button
+                              type="button"
+                              className="add-row"
+                              onClick={openAddSource}
+                            >
+                              <span>+</span>
+                              Add another source
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -1368,7 +1379,7 @@ export function Dashboard() {
         </div>
       </main>
 
-      {showAddSource && list && (
+      {canManage && showAddSource && list && (
         <div
           className="drawer-backdrop"
           role="presentation"
@@ -1694,7 +1705,7 @@ export function Dashboard() {
         </div>
       )}
 
-      {editingManual && (
+      {canManage && editingManual && (
         <div
           className="drawer-backdrop"
           role="presentation"
@@ -1786,7 +1797,7 @@ export function Dashboard() {
         </div>
       )}
 
-      {editingList && (
+      {canManage && editingList && (
         <div
           className="drawer-backdrop"
           role="presentation"
@@ -1897,11 +1908,13 @@ function PublishedView({
   endpoint,
   copyEndpoint,
   editList,
+  canEdit,
 }: {
   list: PublishedList;
   endpoint: string;
   copyEndpoint: () => void;
   editList: () => void;
+  canEdit: boolean;
 }) {
   return (
     <section className="published-layout">
@@ -1911,9 +1924,15 @@ function PublishedView({
             <p className="eyebrow">Universal list endpoint</p>
             <h2>{list.name}</h2>
           </div>
-          <button className="secondary-button" type="button" onClick={editList}>
-            Edit list
-          </button>
+          {canEdit && (
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={editList}
+            >
+              Edit list
+            </button>
+          )}
         </div>
         <p>{list.description}</p>
         <div className="integration-url">
