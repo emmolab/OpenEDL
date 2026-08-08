@@ -267,7 +267,12 @@ export function Dashboard() {
     (path: string, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
       if (adminToken) headers.set("authorization", `Bearer ${adminToken}`);
-      if (init?.body) headers.set("content-type", "application/json");
+      if (
+        typeof init?.body === "string" &&
+        !headers.has("content-type")
+      ) {
+        headers.set("content-type", "application/json");
+      }
       return fetch(path, { ...init, headers });
     },
     [adminToken],

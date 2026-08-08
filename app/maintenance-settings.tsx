@@ -1,6 +1,13 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import {
+  Children,
+  FormEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
 
 type Limits = {
   remoteSourceMaxMb: number;
@@ -19,8 +26,16 @@ type DatabaseStats = {
 type MaintenanceData = {
   limits: Limits;
   database: DatabaseStats;
+  backups: DatabaseBackupFile[];
+  backupSchedule: BackupScheduleSettings;
   vacuumSchedule: VacuumScheduleSettings;
   auditRetention: AuditRetentionSettings;
+};
+
+type DatabaseBackupFile = {
+  createdAt: string;
+  fileName: string;
+  sizeBytes: number;
 };
 
 type AuditRetentionSettings = {
@@ -35,10 +50,19 @@ type VacuumSchedule = "disabled" | "daily" | "weekly" | "monthly";
 
 type VacuumScheduleSettings = {
   schedule: VacuumSchedule;
+  timeUtc: string;
   nextRunAt: string | null;
   lastRunAt: string | null;
   lastStatus: "never" | "success" | "failed";
   lastError: string | null;
+};
+
+type BackupScheduleSettings = VacuumScheduleSettings & {
+  available: boolean;
+  directory: string | null;
+  retentionCount: number;
+  lastFileName: string | null;
+  lastSizeBytes: number;
 };
 
 type Props = {
@@ -69,21 +93,49 @@ function dateLabel(value: string | null) {
       }).format(date);
 }
 
+function MaintenanceCardGrid({ children }: { children: ReactNode }) {
+  const cards = Children.toArray(children);
+  return (
+    <section className="maintenance-grid">
+      <div className="maintenance-column">
+        {cards.filter((_card, index) => index % 2 === 0)}
+      </div>
+      <div className="maintenance-column">
+        {cards.filter((_card, index) => index % 2 === 1)}
+      </div>
+    </section>
+  );
+}
+
 export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
   const [data, setData] = useState<MaintenanceData | null>(null);
   const [remoteLimit, setRemoteLimit] = useState(2);
   const [apiLimit, setApiLimit] = useState(20);
   const [vacuumSchedule, setVacuumSchedule] =
     useState<VacuumSchedule>("disabled");
+  const [vacuumTimeUtc, setVacuumTimeUtc] = useState("02:00");
+  const [backupSchedule, setBackupSchedule] =
+    useState<VacuumSchedule>("disabled");
+  const [backupTimeUtc, setBackupTimeUtc] = useState("01:00");
+  const [backupRetentionCount, setBackupRetentionCount] = useState(8);
+  const [selectedBackupFile, setSelectedBackupFile] = useState("");
+  const [uploadedBackupFile, setUploadedBackupFile] = useState<File | null>(null);
   const [auditRetentionEnabled, setAuditRetentionEnabled] = useState(false);
   const [auditRetentionDays, setAuditRetentionDays] = useState(90);
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isVacuuming, setIsVacuuming] = useState(false);
+  const [isBackingUp, setIsBackingUp] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [isSavingBackupSchedule, setIsSavingBackupSchedule] = useState(false);
   const [isSavingSchedule, setIsSavingSchedule] = useState(false);
   const [isSavingRetention, setIsSavingRetention] = useState(false);
   const [isRunningRetention, setIsRunningRetention] = useState(false);
   const [showVacuumConfirmation, setShowVacuumConfirmation] = useState(false);
+  const [showBackupConfirmation, setShowBackupConfirmation] = useState(false);
+  const [showRestoreConfirmation, setShowRestoreConfirmation] = useState(false);
+  const [showUploadRestoreConfirmation, setShowUploadRestoreConfirmation] =
+    useState(false);
   const [showRetentionConfirmation, setShowRetentionConfirmation] =
     useState(false);
 
@@ -102,6 +154,15 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
       setRemoteLimit(payload.limits.remoteSourceMaxMb);
       setApiLimit(payload.limits.apiSourceMaxMb);
       setVacuumSchedule(payload.vacuumSchedule.schedule);
+      setVacuumTimeUtc(payload.vacuumSchedule.timeUtc);
+      setBackupSchedule(payload.backupSchedule.schedule);
+      setBackupTimeUtc(payload.backupSchedule.timeUtc);
+      setBackupRetentionCount(payload.backupSchedule.retentionCount);
+      setSelectedBackupFile((current) =>
+        payload.backups.some((backup) => backup.fileName === current)
+          ? current
+          : (payload.backups[0]?.fileName ?? ""),
+      );
       setAuditRetentionEnabled(payload.auditRetention.enabled);
       setAuditRetentionDays(payload.auditRetention.days || 90);
       setError("");
@@ -119,16 +180,33 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
   }, [load]);
 
   useEffect(() => {
-    if (!showVacuumConfirmation && !showRetentionConfirmation) return;
+    if (
+      !showVacuumConfirmation &&
+      !showBackupConfirmation &&
+      !showRestoreConfirmation &&
+      !showUploadRestoreConfirmation &&
+      !showRetentionConfirmation
+    ) {
+      return;
+    }
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setShowVacuumConfirmation(false);
+        setShowBackupConfirmation(false);
+        setShowRestoreConfirmation(false);
+        setShowUploadRestoreConfirmation(false);
         setShowRetentionConfirmation(false);
       }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [showRetentionConfirmation, showVacuumConfirmation]);
+  }, [
+    showBackupConfirmation,
+    showRestoreConfirmation,
+    showUploadRestoreConfirmation,
+    showRetentionConfirmation,
+    showVacuumConfirmation,
+  ]);
 
   async function saveLimits(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -205,7 +283,7 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
     try {
       const response = await apiFetch("/api/settings/maintenance", {
         method: "PATCH",
-        body: JSON.stringify({ vacuumSchedule }),
+        body: JSON.stringify({ vacuumSchedule, vacuumTimeUtc }),
       });
       const payload = (await response.json()) as {
         vacuumSchedule?: VacuumScheduleSettings;
@@ -222,7 +300,7 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
       setNotice(
         vacuumSchedule === "disabled"
           ? "Scheduled database VACUUM disabled."
-          : `Database VACUUM scheduled ${vacuumSchedule}.`,
+          : `Database VACUUM scheduled ${vacuumSchedule} at ${vacuumTimeUtc} UTC.`,
       );
     } catch (scheduleError) {
       setError(
@@ -232,6 +310,177 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
       );
     } finally {
       setIsSavingSchedule(false);
+    }
+  }
+
+  async function backupNow() {
+    setShowBackupConfirmation(false);
+    setIsBackingUp(true);
+    setError("");
+    try {
+      const response = await apiFetch("/api/settings/maintenance", {
+        method: "POST",
+        body: JSON.stringify({ action: "backup" }),
+      });
+      const payload = (await response.json()) as {
+        fileName?: string;
+        sizeBytes?: number;
+        pruned?: number;
+        settings?: BackupScheduleSettings;
+        backups?: DatabaseBackupFile[];
+        error?: string;
+      };
+      if (
+        !response.ok ||
+        !payload.settings ||
+        !payload.backups ||
+        !payload.fileName
+      ) {
+        throw new Error(payload.error ?? "Unable to back up the database.");
+      }
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              backupSchedule: payload.settings as BackupScheduleSettings,
+              backups: payload.backups as DatabaseBackupFile[],
+            }
+          : current,
+      );
+      setSelectedBackupFile(payload.fileName);
+      setNotice(
+        `Database backup created · ${payload.fileName} · ${formatBytes(payload.sizeBytes ?? 0)}${payload.pruned ? ` · ${payload.pruned} expired backup${payload.pruned === 1 ? "" : "s"} removed` : ""}.`,
+      );
+    } catch (backupError) {
+      setError(
+        backupError instanceof Error
+          ? backupError.message
+          : "Unable to back up the database.",
+      );
+    } finally {
+      setIsBackingUp(false);
+    }
+  }
+
+  async function saveBackupSchedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSavingBackupSchedule(true);
+    setError("");
+    try {
+      const response = await apiFetch("/api/settings/maintenance", {
+        method: "PATCH",
+        body: JSON.stringify({
+          backupSchedule,
+          backupTimeUtc,
+          backupRetentionCount,
+        }),
+      });
+      const payload = (await response.json()) as {
+        backupSchedule?: BackupScheduleSettings;
+        error?: string;
+      };
+      if (!response.ok || !payload.backupSchedule) {
+        throw new Error(payload.error ?? "Unable to save backup schedule.");
+      }
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              backupSchedule: payload.backupSchedule as BackupScheduleSettings,
+            }
+          : current,
+      );
+      setNotice(
+        backupSchedule === "disabled"
+          ? "Scheduled database backups disabled."
+          : `Database backups scheduled ${backupSchedule} at ${backupTimeUtc} UTC.`,
+      );
+    } catch (scheduleError) {
+      setError(
+        scheduleError instanceof Error
+          ? scheduleError.message
+          : "Unable to save backup schedule.",
+      );
+    } finally {
+      setIsSavingBackupSchedule(false);
+    }
+  }
+
+  async function restoreBackup() {
+    if (!selectedBackupFile) return;
+    setShowRestoreConfirmation(false);
+    setIsRestoring(true);
+    setError("");
+    try {
+      const response = await apiFetch("/api/settings/maintenance", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "restore",
+          fileName: selectedBackupFile,
+          confirmFileName: selectedBackupFile,
+        }),
+      });
+      const payload = (await response.json()) as {
+        fileName?: string;
+        safetyBackupFileName?: string;
+        error?: string;
+      };
+      if (!response.ok || !payload.fileName) {
+        throw new Error(payload.error ?? "Unable to restore the database backup.");
+      }
+      setNotice(
+        `Database restored from ${payload.fileName}. Pre-restore safety backup: ${payload.safetyBackupFileName ?? "created"}. Reloading…`,
+      );
+      window.setTimeout(() => window.location.reload(), 1200);
+    } catch (restoreError) {
+      setError(
+        restoreError instanceof Error
+          ? restoreError.message
+          : "Unable to restore the database backup.",
+      );
+      setIsRestoring(false);
+    }
+  }
+
+  async function restoreUploadedBackup() {
+    if (!uploadedBackupFile) return;
+    setShowUploadRestoreConfirmation(false);
+    setIsRestoring(true);
+    setError("");
+    try {
+      const response = await apiFetch(
+        `/api/settings/maintenance?action=restore-upload&fileName=${encodeURIComponent(uploadedBackupFile.name)}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/octet-stream",
+            "x-openedl-restore-confirmation": "restore",
+          },
+          body: uploadedBackupFile,
+        },
+      );
+      const payload = (await response.json()) as {
+        fileName?: string;
+        originalFileName?: string;
+        safetyBackupFileName?: string;
+        error?: string;
+      };
+      if (!response.ok || !payload.fileName) {
+        throw new Error(
+          payload.error ?? "Unable to restore the uploaded database backup.",
+        );
+      }
+      setNotice(
+        `Database restored from ${payload.originalFileName ?? uploadedBackupFile.name}. Pre-restore safety backup: ${payload.safetyBackupFileName ?? "created"}. Reloading…`,
+      );
+      window.setTimeout(() => window.location.reload(), 1200);
+    } catch (restoreError) {
+      setError(
+        restoreError instanceof Error
+          ? restoreError.message
+          : "Unable to restore the uploaded database backup.",
+      );
+      setIsRestoring(false);
     }
   }
 
@@ -324,15 +573,15 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
             <em>maintenance.</em>
           </h1>
           <p className="heading-copy">
-            Tune feed download ceilings, control audit retention, and reclaim
-            unused SQLite pages from the management portal.
+            Schedule verified SQLite backups, tune feed download ceilings,
+            control audit retention, and reclaim unused pages.
           </p>
         </div>
       </section>
 
       {error && <p className="settings-error">{error}</p>}
 
-      <section className="maintenance-grid">
+      <MaintenanceCardGrid>
         <article className="panel maintenance-panel">
           <div className="panel-heading">
             <div>
@@ -400,6 +649,198 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
         <article className="panel maintenance-panel">
           <div className="panel-heading">
             <div>
+              <p className="eyebrow">Data protection</p>
+              <h2>SQLite backups</h2>
+            </div>
+            <span className="format-pill">
+              {data?.backupSchedule.available ? "Available" : "Unavailable"}
+            </span>
+          </div>
+          <div className="database-stats">
+            <div>
+              <span>Last backup</span>
+              <strong>
+                {dateLabel(data?.backupSchedule.lastRunAt ?? null)}
+              </strong>
+            </div>
+            <div>
+              <span>Last size</span>
+              <strong>
+                {data?.backupSchedule.lastSizeBytes
+                  ? formatBytes(data.backupSchedule.lastSizeBytes)
+                  : "—"}
+              </strong>
+            </div>
+            <div>
+              <span>Last status</span>
+              <strong>{data?.backupSchedule.lastStatus ?? "never"}</strong>
+            </div>
+          </div>
+          <div className="maintenance-action">
+            <p>
+              Backups use SQLite&apos;s online backup API and are verified before
+              they are retained. They are stored in{" "}
+              <code>{data?.backupSchedule.directory ?? "the SQLite host"}</code>
+              {data?.backupSchedule.lastFileName
+                ? ` · Latest: ${data.backupSchedule.lastFileName}`
+                : ""}
+              . Managed D1 requires provider-managed backups instead.
+            </p>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => setShowBackupConfirmation(true)}
+              disabled={
+                isBackingUp || !data?.backupSchedule.available
+              }
+            >
+              {isBackingUp ? "Backing up…" : "Back up database now"}
+            </button>
+          </div>
+          <div className="backup-restore">
+            <div>
+              <p className="eyebrow">Recovery</p>
+              <h3>Restore from backup</h3>
+              <p>
+                Restore the complete application database from a verified
+                OpenEDL backup. A safety backup of the current database is
+                created first.
+              </p>
+            </div>
+            <div className="field">
+              <label htmlFor="restore-backup">Backup file</label>
+              <select
+                id="restore-backup"
+                value={selectedBackupFile}
+                disabled={isRestoring || data?.backups.length === 0}
+                onChange={(event) => setSelectedBackupFile(event.target.value)}
+              >
+                {data?.backups.length ? (
+                  data.backups.map((backup) => (
+                    <option key={backup.fileName} value={backup.fileName}>
+                      {dateLabel(backup.createdAt)} · {formatBytes(backup.sizeBytes)}
+                    </option>
+                  ))
+                ) : (
+                  <option value="">No backup files available</option>
+                )}
+              </select>
+              {selectedBackupFile && <small>{selectedBackupFile}</small>}
+            </div>
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={isRestoring || !selectedBackupFile}
+              onClick={() => setShowRestoreConfirmation(true)}
+            >
+              {isRestoring ? "Restoring…" : "Restore selected backup"}
+            </button>
+            <div className="restore-divider">
+              <span>Or restore a backup file</span>
+            </div>
+            <div className="field">
+              <label htmlFor="restore-backup-upload">SQLite backup file</label>
+              <input
+                id="restore-backup-upload"
+                type="file"
+                accept=".db,.sqlite,.sqlite3,application/vnd.sqlite3,application/octet-stream"
+                disabled={isRestoring || !data?.backupSchedule.available}
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  if (file && file.size > 1_000_000_000) {
+                    setUploadedBackupFile(null);
+                    setError("Database backup uploads cannot exceed 1 GB.");
+                    event.target.value = "";
+                    return;
+                  }
+                  setError("");
+                  setUploadedBackupFile(file);
+                }}
+              />
+              <small>Accepted: .sqlite, .sqlite3, or .db · Maximum 1 GB</small>
+            </div>
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={isRestoring || !uploadedBackupFile}
+              onClick={() => setShowUploadRestoreConfirmation(true)}
+            >
+              {isRestoring ? "Restoring…" : "Restore uploaded file"}
+            </button>
+          </div>
+          <form
+            className="maintenance-schedule backup-schedule"
+            onSubmit={saveBackupSchedule}
+          >
+            <div className="field">
+              <label htmlFor="backup-schedule">Automatic backups</label>
+              <select
+                id="backup-schedule"
+                value={backupSchedule}
+                disabled={!data?.backupSchedule.available}
+                onChange={(event) =>
+                  setBackupSchedule(event.target.value as VacuumSchedule)
+                }
+              >
+                <option value="disabled">Disabled</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="backup-time">Run time</label>
+              <input
+                id="backup-time"
+                type="time"
+                step={300}
+                value={backupTimeUtc}
+                disabled={
+                  !data?.backupSchedule.available ||
+                  backupSchedule === "disabled"
+                }
+                onChange={(event) => setBackupTimeUtc(event.target.value)}
+                required
+              />
+              <small>UTC</small>
+            </div>
+            <div className="field">
+              <label htmlFor="backup-retention">Files to retain</label>
+              <input
+                id="backup-retention"
+                type="number"
+                min={1}
+                max={104}
+                step={1}
+                value={backupRetentionCount}
+                disabled={!data?.backupSchedule.available}
+                onChange={(event) =>
+                  setBackupRetentionCount(Number(event.target.value))
+                }
+                required
+              />
+            </div>
+            <button
+              className="secondary-button"
+              type="submit"
+              disabled={
+                isSavingBackupSchedule || !data?.backupSchedule.available
+              }
+            >
+              {isSavingBackupSchedule ? "Saving…" : "Save backup schedule"}
+            </button>
+            <small className="schedule-summary">
+              Next run: {dateLabel(data?.backupSchedule.nextRunAt ?? null)}
+              {data?.backupSchedule.lastError
+                ? ` · Last error: ${data.backupSchedule.lastError}`
+                : ""}
+            </small>
+          </form>
+        </article>
+
+        <article className="panel maintenance-panel">
+          <div className="panel-heading">
+            <div>
               <p className="eyebrow">SQLite storage</p>
               <h2>Database compaction</h2>
             </div>
@@ -450,7 +891,7 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
               {isVacuuming ? "Compacting…" : "Run database VACUUM"}
             </button>
           </div>
-          <form className="vacuum-schedule" onSubmit={saveVacuumSchedule}>
+          <form className="maintenance-schedule" onSubmit={saveVacuumSchedule}>
             <div className="field">
               <label htmlFor="vacuum-schedule">Automatic VACUUM</label>
               <select
@@ -465,17 +906,19 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
                 <option value="weekly">Weekly</option>
                 <option value="monthly">Monthly</option>
               </select>
-              <small>
-                Next run: {dateLabel(data?.vacuumSchedule.nextRunAt ?? null)}
-                {data?.vacuumSchedule.lastRunAt
-                  ? ` · Last ${data.vacuumSchedule.lastStatus}: ${dateLabel(data.vacuumSchedule.lastRunAt)}`
-                  : ""}
-              </small>
-              {data?.vacuumSchedule.lastError && (
-                <small className="schedule-error">
-                  Last error: {data.vacuumSchedule.lastError}
-                </small>
-              )}
+            </div>
+            <div className="field">
+              <label htmlFor="vacuum-time">Run time</label>
+              <input
+                id="vacuum-time"
+                type="time"
+                step={300}
+                value={vacuumTimeUtc}
+                disabled={vacuumSchedule === "disabled"}
+                onChange={(event) => setVacuumTimeUtc(event.target.value)}
+                required
+              />
+              <small>UTC</small>
             </div>
             <button
               className="secondary-button"
@@ -484,6 +927,15 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
             >
               {isSavingSchedule ? "Saving…" : "Save VACUUM schedule"}
             </button>
+            <small className="schedule-summary">
+              Next run: {dateLabel(data?.vacuumSchedule.nextRunAt ?? null)}
+              {data?.vacuumSchedule.lastRunAt
+                ? ` · Last ${data.vacuumSchedule.lastStatus}: ${dateLabel(data.vacuumSchedule.lastRunAt)}`
+                : ""}
+              {data?.vacuumSchedule.lastError
+                ? ` · Last error: ${data.vacuumSchedule.lastError}`
+                : ""}
+            </small>
           </form>
         </article>
 
@@ -558,7 +1010,157 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
             </div>
           </form>
         </article>
-      </section>
+      </MaintenanceCardGrid>
+
+      {showBackupConfirmation && (
+        <div
+          className="drawer-backdrop confirm-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowBackupConfirmation(false);
+            }
+          }}
+        >
+          <section
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="backup-confirm-title"
+            aria-describedby="backup-confirm-description"
+          >
+            <div className="confirm-icon" aria-hidden="true">
+              ◫
+            </div>
+            <p className="eyebrow">Database protection</p>
+            <h2 id="backup-confirm-title">Back up the database now?</h2>
+            <p id="backup-confirm-description">
+              OpenEDL will create and verify a consistent SQLite backup. After
+              it succeeds, older OpenEDL backups beyond the configured
+              retention count will be removed.
+            </p>
+            <div className="confirm-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => setShowBackupConfirmation(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                autoFocus
+                onClick={() => void backupNow()}
+              >
+                Create database backup
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {showRestoreConfirmation && (
+        <div
+          className="drawer-backdrop confirm-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowRestoreConfirmation(false);
+            }
+          }}
+        >
+          <section
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="restore-confirm-title"
+            aria-describedby="restore-confirm-description"
+          >
+            <div className="confirm-icon" aria-hidden="true">
+              ↺
+            </div>
+            <p className="eyebrow">Database recovery</p>
+            <h2 id="restore-confirm-title">Restore this database backup?</h2>
+            <p id="restore-confirm-description">
+              This replaces all current OpenEDL data and settings with the
+              contents of <code>{selectedBackupFile}</code>. OpenEDL will first
+              create a safety backup of the current database, verify the
+              selected file, and reload after restoration. You may need to sign
+              in again.
+            </p>
+            <div className="confirm-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => setShowRestoreConfirmation(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                autoFocus
+                onClick={() => void restoreBackup()}
+              >
+                Restore database
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {showUploadRestoreConfirmation && uploadedBackupFile && (
+        <div
+          className="drawer-backdrop confirm-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowUploadRestoreConfirmation(false);
+            }
+          }}
+        >
+          <section
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="upload-restore-confirm-title"
+            aria-describedby="upload-restore-confirm-description"
+          >
+            <div className="confirm-icon" aria-hidden="true">
+              ↑
+            </div>
+            <p className="eyebrow">Database recovery</p>
+            <h2 id="upload-restore-confirm-title">
+              Upload and restore this backup?
+            </h2>
+            <p id="upload-restore-confirm-description">
+              OpenEDL will upload and verify <code>{uploadedBackupFile.name}</code>{" "}
+              ({formatBytes(uploadedBackupFile.size)}), retain it in the backup
+              directory, and create a safety backup before replacing the live
+              database. The page reloads afterward and you may need to sign in
+              again.
+            </p>
+            <div className="confirm-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => setShowUploadRestoreConfirmation(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                autoFocus
+                onClick={() => void restoreUploadedBackup()}
+              >
+                Upload and restore database
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {showVacuumConfirmation && (
         <div

@@ -73,6 +73,7 @@ for your environment. They never share sources or entries with the IP output.
   ```
 
 - Set a stable `CRON_SECRET` only when an external scheduler needs to call `POST /api/cron/refresh`; otherwise the Docker container generates an internal scheduler token.
+- SQLite deployments can create verified manual or scheduled backups from **Maintenance**. Backups default to `/data/backups`; set `DATABASE_BACKUP_DIR` to use another mounted directory.
 - Emergency local sign-in is disabled by default. Set `EMERGENCY_LOCAL_AUTH_ENABLED=true` in `.env` and restart OpenEDL only when break-glass access is required.
 - If the local administrator password is lost, reset it from the container:
 
@@ -83,6 +84,8 @@ for your environment. They never share sources or entries with the IP output.
 ## Documentation
 
 - [SSO configuration](docs/SSO.md)
+- [SQLite backup and maintenance](docs/BACKUPS.md)
+- [Release and container publishing](docs/RELEASING.md)
 - [Cloudflare Workers deployment](docs/CLOUDFLARE.md)
 - [Environment template](.env.example)
 - [Cloudflare environment template](.env.cloudflare.example)

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -55,6 +56,8 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
       ADMIN_TOKEN: "",
       AUTH_BASE_URL: baseUrl,
       CONFIG_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
+      CRON_SECRET: "integration-test-cron-secret",
+      DATABASE_BACKUP_DIR: join(workingDirectory, "backups"),
       DATABASE_PATH: join(workingDirectory, "openedl.sqlite"),
       EMERGENCY_LOCAL_AUTH_ENABLED: "true",
       HOST: "127.0.0.1",
@@ -738,12 +741,27 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
   assert.equal(maintenance.database.available, true);
   assert.ok(maintenance.database.sizeBytes > 0);
   assert.ok(maintenance.database.pageCount > 0);
+  assert.deepEqual(maintenance.backups, []);
   assert.deepEqual(maintenance.vacuumSchedule, {
     schedule: "disabled",
+    timeUtc: "02:00",
     nextRunAt: null,
     lastRunAt: null,
     lastStatus: "never",
     lastError: null,
+  });
+  assert.deepEqual(maintenance.backupSchedule, {
+    available: true,
+    directory: join(workingDirectory, "backups"),
+    schedule: "disabled",
+    timeUtc: "01:00",
+    retentionCount: 8,
+    nextRunAt: null,
+    lastRunAt: null,
+    lastStatus: "never",
+    lastError: null,
+    lastFileName: null,
+    lastSizeBytes: 0,
   });
   assert.deepEqual(maintenance.auditRetention, {
     days: 0,
@@ -800,13 +818,113 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
     {
       method: "PATCH",
       headers: { cookie, "content-type": "application/json" },
-      body: JSON.stringify({ vacuumSchedule: "weekly" }),
+      body: JSON.stringify({
+        vacuumSchedule: "weekly",
+        vacuumTimeUtc: "03:30",
+      }),
     },
   );
   assert.equal(scheduleVacuumResponse.status, 200);
   const scheduledVacuum = await scheduleVacuumResponse.json();
   assert.equal(scheduledVacuum.vacuumSchedule.schedule, "weekly");
+  assert.equal(scheduledVacuum.vacuumSchedule.timeUtc, "03:30");
   assert.ok(Date.parse(scheduledVacuum.vacuumSchedule.nextRunAt) > Date.now());
+
+  const scheduleBackupResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    {
+      method: "PATCH",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        backupSchedule: "weekly",
+        backupTimeUtc: "02:30",
+        backupRetentionCount: 1,
+      }),
+    },
+  );
+  assert.equal(scheduleBackupResponse.status, 200);
+  const scheduledBackup = (await scheduleBackupResponse.json()).backupSchedule;
+  assert.equal(scheduledBackup.schedule, "weekly");
+  assert.equal(scheduledBackup.timeUtc, "02:30");
+  assert.equal(scheduledBackup.retentionCount, 1);
+  assert.ok(Date.parse(scheduledBackup.nextRunAt) > Date.now());
+
+  const firstBackupResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ action: "backup" }),
+    },
+  );
+  assert.equal(firstBackupResponse.status, 200);
+  const firstBackup = await firstBackupResponse.json();
+  assert.match(firstBackup.fileName, /^openedl-backup-.+\.sqlite$/);
+  assert.ok(firstBackup.sizeBytes > 0);
+  assert.equal(firstBackup.settings.lastStatus, "success");
+  await access(join(workingDirectory, "backups", firstBackup.fileName));
+  const backupDatabase = new DatabaseSync(
+    join(workingDirectory, "backups", firstBackup.fileName),
+    { readOnly: true },
+  );
+  assert.equal(
+    backupDatabase
+      .prepare("SELECT COUNT(*) AS count FROM auth_users")
+      .get().count,
+    2,
+  );
+  backupDatabase.close();
+
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  const secondBackupResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ action: "backup" }),
+    },
+  );
+  assert.equal(secondBackupResponse.status, 200);
+  const secondBackup = await secondBackupResponse.json();
+  assert.notEqual(secondBackup.fileName, firstBackup.fileName);
+  assert.equal(secondBackup.pruned, 1);
+  await access(join(workingDirectory, "backups", secondBackup.fileName));
+  await assert.rejects(
+    access(join(workingDirectory, "backups", firstBackup.fileName)),
+  );
+
+  const liveDatabase = new DatabaseSync(
+    join(workingDirectory, "openedl.sqlite"),
+  );
+  liveDatabase.exec(
+    `UPDATE app_settings SET value = datetime('now', '-1 minute')
+     WHERE key = 'backup_next_at'`,
+  );
+  liveDatabase.exec(
+    `UPDATE sources SET next_refresh_at = datetime('now', '+1 day')
+     WHERE kind = 'remote'`,
+  );
+  liveDatabase.close();
+
+  const scheduledMaintenanceResponse = await fetch(
+    `${baseUrl}/api/cron/refresh`,
+    {
+      method: "POST",
+      headers: {
+        authorization: "Bearer integration-test-cron-secret",
+      },
+    },
+  );
+  assert.equal(scheduledMaintenanceResponse.status, 200);
+  const scheduledMaintenance = await scheduledMaintenanceResponse.json();
+  assert.equal(scheduledMaintenance.maintenance.backup.ran, true);
+  assert.equal(scheduledMaintenance.maintenance.backup.ok, true);
+  const scheduledBackupFile =
+    scheduledMaintenance.maintenance.backup.result.fileName;
+  await access(join(workingDirectory, "backups", scheduledBackupFile));
+  await assert.rejects(
+    access(join(workingDirectory, "backups", secondBackup.fileName)),
+  );
 
   const updateLimitsResponse = await fetch(
     `${baseUrl}/api/settings/maintenance`,
@@ -837,6 +955,117 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
     },
   );
   assert.equal(invalidLimitsResponse.status, 400);
+
+  const backupsBeforeRestoreResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    { headers: { cookie } },
+  );
+  assert.equal(backupsBeforeRestoreResponse.status, 200);
+  const backupsBeforeRestore = (await backupsBeforeRestoreResponse.json()).backups;
+  assert.equal(backupsBeforeRestore.length, 1);
+  assert.equal(backupsBeforeRestore[0].fileName, scheduledBackupFile);
+  assert.ok(backupsBeforeRestore[0].sizeBytes > 0);
+
+  const restoreResponse = await fetch(`${baseUrl}/api/settings/maintenance`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({
+      action: "restore",
+      fileName: scheduledBackupFile,
+      confirmFileName: scheduledBackupFile,
+    }),
+  });
+  assert.equal(restoreResponse.status, 200);
+  const restored = await restoreResponse.json();
+  assert.equal(restored.fileName, scheduledBackupFile);
+  assert.match(restored.safetyBackupFileName, /^openedl-backup-.+\.sqlite$/);
+  assert.notEqual(restored.safetyBackupFileName, scheduledBackupFile);
+  assert.equal(restored.backups.length, 2);
+
+  const restoredMaintenanceResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    { headers: { cookie } },
+  );
+  assert.equal(restoredMaintenanceResponse.status, 200);
+  assert.deepEqual((await restoredMaintenanceResponse.json()).limits, {
+    remoteSourceMaxMb: 2,
+    apiSourceMaxMb: 20,
+  });
+
+  const restoreSafetyResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "restore",
+        fileName: restored.safetyBackupFileName,
+        confirmFileName: restored.safetyBackupFileName,
+      }),
+    },
+  );
+  assert.equal(restoreSafetyResponse.status, 200);
+  const restoredSafetyMaintenanceResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    { headers: { cookie } },
+  );
+  assert.deepEqual((await restoredSafetyMaintenanceResponse.json()).limits, {
+    remoteSourceMaxMb: 8,
+    apiSourceMaxMb: 250,
+  });
+
+  const uploadedBackupBytes = await readFile(
+    join(workingDirectory, "backups", scheduledBackupFile),
+  );
+  const uploadRestoreResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance?action=restore-upload&fileName=external-snapshot.db`,
+    {
+      method: "POST",
+      headers: {
+        cookie,
+        "content-type": "application/octet-stream",
+        "x-openedl-restore-confirmation": "restore",
+      },
+      body: uploadedBackupBytes,
+    },
+  );
+  assert.equal(uploadRestoreResponse.status, 200);
+  const uploadedRestore = await uploadRestoreResponse.json();
+  assert.equal(uploadedRestore.originalFileName, "external-snapshot.db");
+  assert.match(
+    uploadedRestore.importedFileName,
+    /^openedl-backup-.+-imported-[a-f0-9]+\.sqlite$/,
+  );
+  const uploadedRestoreMaintenanceResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    { headers: { cookie } },
+  );
+  assert.deepEqual((await uploadedRestoreMaintenanceResponse.json()).limits, {
+    remoteSourceMaxMb: 2,
+    apiSourceMaxMb: 20,
+  });
+
+  const restoreUploadSafetyResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "restore",
+        fileName: uploadedRestore.safetyBackupFileName,
+        confirmFileName: uploadedRestore.safetyBackupFileName,
+      }),
+    },
+  );
+  assert.equal(restoreUploadSafetyResponse.status, 200);
+  const afterUploadRollbackResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    { headers: { cookie } },
+  );
+  assert.deepEqual((await afterUploadRollbackResponse.json()).limits, {
+    remoteSourceMaxMb: 8,
+    apiSourceMaxMb: 250,
+  });
 
   const vacuumResponse = await fetch(`${baseUrl}/api/settings/maintenance`, {
     method: "POST",

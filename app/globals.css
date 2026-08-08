@@ -2426,6 +2426,13 @@ button:disabled {
   gap: 20px;
 }
 
+.maintenance-column {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 20px;
+}
+
 .maintenance-panel {
   overflow: hidden;
 }
@@ -2515,13 +2522,92 @@ button:disabled {
   justify-self: start;
 }
 
-.vacuum-schedule {
+.backup-restore {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 18px;
+  border-top: 1px solid var(--line);
+  padding: 24px;
+}
+
+.backup-restore > :first-child {
+  grid-column: 1 / -1;
+}
+
+.backup-restore h3 {
+  margin: 5px 0 8px;
+  font-size: 17px;
+  letter-spacing: -0.025em;
+}
+
+.backup-restore p:not(.eyebrow) {
+  color: var(--muted);
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.backup-restore .field small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backup-restore > button {
+  margin-bottom: 19px;
+}
+
+.restore-divider {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font: 700 8px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.restore-divider::before,
+.restore-divider::after {
+  height: 1px;
+  flex: 1;
+  background: var(--line);
+  content: "";
+}
+
+.maintenance-schedule {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 130px auto;
   align-items: end;
   gap: 16px;
   border-top: 1px solid var(--line);
   padding: 24px;
+}
+
+.maintenance-schedule.backup-schedule {
+  grid-template-columns: minmax(0, 1fr) 130px 130px auto;
+}
+
+.maintenance-schedule .field {
+  grid-template-rows: auto 42px 13px;
+  align-content: start;
+}
+
+.maintenance-schedule .field input,
+.maintenance-schedule .field select {
+  height: 42px;
+}
+
+.maintenance-schedule > button {
+  align-self: start;
+  margin-top: 21px;
+}
+
+.schedule-summary {
+  grid-column: 1 / -1;
+  color: var(--muted);
 }
 
 .retention-actions {
@@ -3089,9 +3175,21 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
-  .vacuum-schedule,
+  .maintenance-schedule,
+  .maintenance-schedule.backup-schedule,
+  .backup-restore,
   .audit-filters {
     grid-template-columns: 1fr;
+  }
+
+  .backup-restore > :first-child {
+    grid-column: auto;
+  }
+
+  .backup-restore > button,
+  .maintenance-schedule > button {
+    margin-top: 0;
+    margin-bottom: 0;
   }
 
   .audit-summary {

@@ -46,10 +46,59 @@ export type VacuumSchedule = "disabled" | "daily" | "weekly" | "monthly";
 
 export type VacuumScheduleSettings = {
   schedule: VacuumSchedule;
+  timeUtc: string;
   nextRunAt: string | null;
   lastRunAt: string | null;
   lastStatus: "never" | "success" | "failed";
   lastError: string | null;
+};
+
+export type BackupScheduleSettings = {
+  available: boolean;
+  directory: string | null;
+  schedule: VacuumSchedule;
+  timeUtc: string;
+  retentionCount: number;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastStatus: "never" | "success" | "failed";
+  lastError: string | null;
+  lastFileName: string | null;
+  lastSizeBytes: number;
+};
+
+type DatabaseBackupResult = {
+  createdAt: string;
+  fileName: string;
+  pruned: number;
+  sizeBytes: number;
+};
+
+export type DatabaseBackupFile = {
+  createdAt: string;
+  fileName: string;
+  sizeBytes: number;
+};
+
+type DatabaseRestoreResult = {
+  restoredAt: string;
+  fileName: string;
+  sizeBytes: number;
+  safetyBackupFileName: string;
+};
+
+type BackupCapableDatabase = D1Database & {
+  backupDirectory?: string;
+  createBackup?: (retentionCount: number) => Promise<DatabaseBackupResult>;
+  listBackups?: () => DatabaseBackupFile[];
+  importBackup?: (
+    originalFileName: string,
+    content: ReadableStream<Uint8Array>,
+  ) => Promise<DatabaseBackupFile & { originalFileName: string }>;
+  restoreBackup?: (
+    fileName: string,
+    retentionCount: number,
+  ) => Promise<DatabaseRestoreResult>;
 };
 
 export type AuditRetentionSettings = {
@@ -362,10 +411,20 @@ async function createSchema(database: D1Database) {
     .run();
   const maintenanceDefaults = [
     ["vacuum_schedule", "disabled"],
+    ["vacuum_time_utc", "02:00"],
     ["vacuum_next_at", ""],
     ["vacuum_last_at", ""],
     ["vacuum_last_status", "never"],
     ["vacuum_last_error", ""],
+    ["backup_schedule", "disabled"],
+    ["backup_time_utc", "01:00"],
+    ["backup_retention_count", "8"],
+    ["backup_next_at", ""],
+    ["backup_last_at", ""],
+    ["backup_last_status", "never"],
+    ["backup_last_error", ""],
+    ["backup_last_file", ""],
+    ["backup_last_size_bytes", "0"],
     ["audit_retention_days", "0"],
     ["audit_retention_next_at", ""],
     ["audit_retention_last_at", ""],
@@ -910,12 +969,43 @@ export async function getDatabaseStats() {
   return readDatabaseStats(getD1());
 }
 
-function nextVacuumDate(schedule: Exclude<VacuumSchedule, "disabled">) {
-  const next = new Date();
-  next.setUTCSeconds(0, 0);
-  if (schedule === "daily") next.setUTCDate(next.getUTCDate() + 1);
-  if (schedule === "weekly") next.setUTCDate(next.getUTCDate() + 7);
-  if (schedule === "monthly") next.setUTCMonth(next.getUTCMonth() + 1);
+function validateScheduleTime(timeUtc: string) {
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(timeUtc)) {
+    throw new Error("Maintenance time must use HH:MM in UTC.");
+  }
+  return timeUtc;
+}
+
+function nextMaintenanceDate(
+  schedule: Exclude<VacuumSchedule, "disabled">,
+  timeUtc: string,
+) {
+  const now = new Date();
+  const [hour, minute] = validateScheduleTime(timeUtc)
+    .split(":")
+    .map(Number);
+  let next = new Date(
+    Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+      hour,
+      minute,
+    ),
+  );
+  if (next.getTime() <= now.getTime()) {
+    if (schedule === "daily") next.setUTCDate(next.getUTCDate() + 1);
+    if (schedule === "weekly") next.setUTCDate(next.getUTCDate() + 7);
+    if (schedule === "monthly") {
+      const day = next.getUTCDate();
+      const year = next.getUTCFullYear();
+      const month = next.getUTCMonth() + 1;
+      const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+      next = new Date(
+        Date.UTC(year, month, Math.min(day, lastDay), hour, minute),
+      );
+    }
+  }
   return next.toISOString();
 }
 
@@ -929,7 +1019,7 @@ export async function getVacuumSchedule(
       `SELECT key, value FROM app_settings
        WHERE key IN (
          'vacuum_schedule', 'vacuum_next_at', 'vacuum_last_at',
-         'vacuum_last_status', 'vacuum_last_error'
+         'vacuum_last_status', 'vacuum_last_error', 'vacuum_time_utc'
        )`,
     )
     .all<{ key: string; value: string }>();
@@ -943,8 +1033,10 @@ export async function getVacuumSchedule(
     ? (configured as VacuumSchedule)
     : "disabled";
   const lastStatus = values.get("vacuum_last_status") ?? "never";
+  const timeUtc = values.get("vacuum_time_utc") ?? "02:00";
   return {
     schedule,
+    timeUtc,
     nextRunAt: values.get("vacuum_next_at") || null,
     lastRunAt: values.get("vacuum_last_at") || null,
     lastStatus:
@@ -955,12 +1047,17 @@ export async function getVacuumSchedule(
   };
 }
 
-export async function updateVacuumSchedule(schedule: VacuumSchedule) {
+export async function updateVacuumSchedule(
+  schedule: VacuumSchedule,
+  timeUtc = "02:00",
+) {
   if (!["disabled", "daily", "weekly", "monthly"].includes(schedule)) {
     throw new Error("Invalid database VACUUM schedule.");
   }
+  validateScheduleTime(timeUtc);
   await ensureDatabase();
-  const nextRunAt = schedule === "disabled" ? "" : nextVacuumDate(schedule);
+  const nextRunAt =
+    schedule === "disabled" ? "" : nextMaintenanceDate(schedule, timeUtc);
   await getD1().batch([
     getD1()
       .prepare(
@@ -973,6 +1070,14 @@ export async function updateVacuumSchedule(schedule: VacuumSchedule) {
     getD1()
       .prepare(
         `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('vacuum_time_utc', ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+           updated_at = CURRENT_TIMESTAMP`,
+      )
+      .bind(timeUtc),
+    getD1()
+      .prepare(
+        `INSERT INTO app_settings (key, value, updated_at)
          VALUES ('vacuum_next_at', ?, CURRENT_TIMESTAMP)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value,
            updated_at = CURRENT_TIMESTAMP`,
@@ -980,6 +1085,262 @@ export async function updateVacuumSchedule(schedule: VacuumSchedule) {
       .bind(nextRunAt),
   ]);
   return getVacuumSchedule();
+}
+
+function backupDatabaseCapability(database: D1Database) {
+  const candidate = database as BackupCapableDatabase;
+  return {
+    available: typeof candidate.createBackup === "function",
+    createBackup: candidate.createBackup?.bind(candidate),
+    directory: candidate.backupDirectory ?? null,
+    listBackups: candidate.listBackups?.bind(candidate),
+    importBackup: candidate.importBackup?.bind(candidate),
+    restoreBackup: candidate.restoreBackup?.bind(candidate),
+  };
+}
+
+export async function getDatabaseBackups(
+  database = getD1(),
+  initialize = true,
+) {
+  if (initialize) await ensureDatabase(database);
+  return backupDatabaseCapability(database).listBackups?.() ?? [];
+}
+
+export async function getBackupSchedule(
+  database = getD1(),
+  initialize = true,
+): Promise<BackupScheduleSettings> {
+  if (initialize) await ensureDatabase(database);
+  const { results } = await database
+    .prepare(
+      `SELECT key, value FROM app_settings
+       WHERE key IN (
+         'backup_schedule', 'backup_time_utc', 'backup_retention_count',
+         'backup_next_at', 'backup_last_at', 'backup_last_status',
+         'backup_last_error', 'backup_last_file', 'backup_last_size_bytes'
+       )`,
+    )
+    .all<{ key: string; value: string }>();
+  const values = new Map(results.map((row) => [row.key, row.value]));
+  const configured = values.get("backup_schedule") ?? "disabled";
+  const schedule: VacuumSchedule = [
+    "daily",
+    "weekly",
+    "monthly",
+  ].includes(configured)
+    ? (configured as VacuumSchedule)
+    : "disabled";
+  const retentionValue = Number(values.get("backup_retention_count") ?? 8);
+  const retentionCount =
+    Number.isInteger(retentionValue) &&
+    retentionValue >= 1 &&
+    retentionValue <= 104
+      ? retentionValue
+      : 8;
+  const lastStatus = values.get("backup_last_status") ?? "never";
+  const capability = backupDatabaseCapability(database);
+  return {
+    available: capability.available,
+    directory: capability.directory,
+    schedule,
+    timeUtc: values.get("backup_time_utc") ?? "01:00",
+    retentionCount,
+    nextRunAt: values.get("backup_next_at") || null,
+    lastRunAt: values.get("backup_last_at") || null,
+    lastStatus:
+      lastStatus === "success" || lastStatus === "failed"
+        ? lastStatus
+        : "never",
+    lastError: values.get("backup_last_error") || null,
+    lastFileName: values.get("backup_last_file") || null,
+    lastSizeBytes: Number(values.get("backup_last_size_bytes") ?? 0) || 0,
+  };
+}
+
+export async function updateBackupSchedule(input: {
+  schedule: VacuumSchedule;
+  timeUtc: string;
+  retentionCount: number;
+}) {
+  if (!["disabled", "daily", "weekly", "monthly"].includes(input.schedule)) {
+    throw new Error("Invalid database backup schedule.");
+  }
+  validateScheduleTime(input.timeUtc);
+  if (
+    !Number.isInteger(input.retentionCount) ||
+    input.retentionCount < 1 ||
+    input.retentionCount > 104
+  ) {
+    throw new Error("Backup retention must be between 1 and 104 files.");
+  }
+  await ensureDatabase();
+  const database = getD1();
+  if (
+    input.schedule !== "disabled" &&
+    !backupDatabaseCapability(database).available
+  ) {
+    throw new Error("SQLite file backups are unavailable on this storage backend.");
+  }
+  const nextRunAt =
+    input.schedule === "disabled"
+      ? ""
+      : nextMaintenanceDate(input.schedule, input.timeUtc);
+  await database.batch([
+    database
+      .prepare(
+        `UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE key = 'backup_schedule'`,
+      )
+      .bind(input.schedule),
+    database
+      .prepare(
+        `UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE key = 'backup_time_utc'`,
+      )
+      .bind(input.timeUtc),
+    database
+      .prepare(
+        `UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE key = 'backup_retention_count'`,
+      )
+      .bind(String(input.retentionCount)),
+    database
+      .prepare(
+        `UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE key = 'backup_next_at'`,
+      )
+      .bind(nextRunAt),
+  ]);
+  return getBackupSchedule();
+}
+
+export async function createDatabaseBackup(
+  database = getD1(),
+  initialize = true,
+) {
+  if (initialize) await ensureDatabase(database);
+  const settings = await getBackupSchedule(database, false);
+  const capability = backupDatabaseCapability(database);
+  if (!capability.available || !capability.createBackup) {
+    throw new Error("SQLite file backups are unavailable on this storage backend.");
+  }
+  try {
+    const result = await capability.createBackup(settings.retentionCount);
+    await database.batch([
+      database
+        .prepare(
+          `UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE key = 'backup_last_at'`,
+        )
+        .bind(result.createdAt),
+      database
+        .prepare(
+          `UPDATE app_settings SET value = 'success', updated_at = CURRENT_TIMESTAMP
+           WHERE key = 'backup_last_status'`,
+        ),
+      database
+        .prepare(
+          `UPDATE app_settings SET value = '', updated_at = CURRENT_TIMESTAMP
+           WHERE key = 'backup_last_error'`,
+        ),
+      database
+        .prepare(
+          `UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE key = 'backup_last_file'`,
+        )
+        .bind(result.fileName),
+      database
+        .prepare(
+          `UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE key = 'backup_last_size_bytes'`,
+        )
+        .bind(String(result.sizeBytes)),
+    ]);
+    logInfo("database.backup.completed", {
+      fileName: result.fileName,
+      pruned: result.pruned,
+      sizeBytes: result.sizeBytes,
+    });
+    return {
+      ...result,
+      settings: await getBackupSchedule(database, false),
+      backups: await getDatabaseBackups(database, false),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await database.batch([
+      database
+        .prepare(
+          `UPDATE app_settings SET value = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP WHERE key = 'backup_last_at'`,
+        ),
+      database
+        .prepare(
+          `UPDATE app_settings SET value = 'failed', updated_at = CURRENT_TIMESTAMP
+           WHERE key = 'backup_last_status'`,
+        ),
+      database
+        .prepare(
+          `UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE key = 'backup_last_error'`,
+        )
+        .bind(message.slice(0, 1000)),
+    ]);
+    logError("database.backup.failed", error);
+    throw error;
+  }
+}
+
+export async function restoreDatabaseBackup(
+  fileName: string,
+  database = getD1(),
+) {
+  await ensureDatabase(database);
+  const settings = await getBackupSchedule(database, false);
+  const capability = backupDatabaseCapability(database);
+  if (!capability.restoreBackup) {
+    throw new Error("SQLite backup restoration is unavailable on this storage backend.");
+  }
+  const result = await capability.restoreBackup(
+    fileName,
+    settings.retentionCount,
+  );
+
+  // A backup may predate the running application version. Re-run the
+  // idempotent schema setup so restored data is immediately usable.
+  initializations.delete(database);
+  await ensureDatabase(database);
+  logInfo("database.restore.completed", {
+    fileName: result.fileName,
+    safetyBackupFileName: result.safetyBackupFileName,
+    sizeBytes: result.sizeBytes,
+  });
+  return {
+    ...result,
+    backups: await getDatabaseBackups(database, false),
+    database: await readDatabaseStats(database),
+    backupSchedule: await getBackupSchedule(database, false),
+  };
+}
+
+export async function restoreUploadedDatabaseBackup(
+  originalFileName: string,
+  content: ReadableStream<Uint8Array>,
+  database = getD1(),
+) {
+  await ensureDatabase(database);
+  const capability = backupDatabaseCapability(database);
+  if (!capability.importBackup) {
+    throw new Error("SQLite backup uploads are unavailable on this storage backend.");
+  }
+  const imported = await capability.importBackup(originalFileName, content);
+  const restored = await restoreDatabaseBackup(imported.fileName, database);
+  return {
+    ...restored,
+    importedFileName: imported.fileName,
+    originalFileName: imported.originalFileName,
+  };
 }
 
 export async function getAuditRetentionSettings(
@@ -1129,18 +1490,75 @@ export async function vacuumDatabase(
   };
 }
 
+async function runScheduledBackup(database: D1Database) {
+  const settings = await getBackupSchedule(database, false);
+  if (
+    !settings.available ||
+    settings.schedule === "disabled" ||
+    !settings.nextRunAt ||
+    new Date(settings.nextRunAt).getTime() > Date.now()
+  ) {
+    return { ran: false, settings };
+  }
+  const claim = await database
+    .prepare(
+      `UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE key = 'backup_next_at' AND value = ?`,
+    )
+    .bind(
+      nextMaintenanceDate(settings.schedule, settings.timeUtc),
+      settings.nextRunAt,
+    )
+    .run();
+  if ((claim.meta.changes ?? 0) === 0) {
+    return {
+      ran: false,
+      settings: await getBackupSchedule(database, false),
+    };
+  }
+  try {
+    const result = await createDatabaseBackup(database, false);
+    return { ran: true, ok: true, result, settings: result.settings };
+  } catch (error) {
+    await database
+      .prepare(
+        `UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE key = 'backup_next_at'`,
+      )
+      .bind(settings.nextRunAt)
+      .run();
+    return {
+      ran: true,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      settings: await getBackupSchedule(database, false),
+    };
+  }
+}
+
 export async function runScheduledMaintenance(database = getD1()) {
   await ensureDatabase(database);
   const auditRetention = await runAuditRetention(database, false);
+  const backup = await runScheduledBackup(database);
   const settings = await getVacuumSchedule(database, false);
+  if (backup.ran && backup.ok === false) {
+    return {
+      ran: true,
+      ok: false,
+      auditRetention,
+      backup,
+      schedule: settings,
+    };
+  }
   if (
     settings.schedule === "disabled" ||
     !settings.nextRunAt ||
     new Date(settings.nextRunAt).getTime() > Date.now()
   ) {
     return {
-      ran: auditRetention.ran,
+      ran: auditRetention.ran || backup.ran,
       auditRetention,
+      backup,
       schedule: settings,
     };
   }
@@ -1152,12 +1570,16 @@ export async function runScheduledMaintenance(database = getD1()) {
       `UPDATE app_settings SET value = ?, updated_at = CURRENT_TIMESTAMP
        WHERE key = 'vacuum_next_at' AND value = ?`,
     )
-    .bind(nextVacuumDate(settings.schedule), settings.nextRunAt)
+    .bind(
+      nextMaintenanceDate(settings.schedule, settings.timeUtc),
+      settings.nextRunAt,
+    )
     .run();
   if ((claim.meta.changes ?? 0) === 0) {
     return {
-      ran: auditRetention.ran,
+      ran: auditRetention.ran || backup.ran,
       auditRetention,
+      backup,
       schedule: await getVacuumSchedule(database, false),
     };
   }
@@ -1187,6 +1609,7 @@ export async function runScheduledMaintenance(database = getD1()) {
       ran: true,
       ok: true,
       auditRetention,
+      backup,
       result,
       schedule: await getVacuumSchedule(database, false),
     };
@@ -1215,6 +1638,7 @@ export async function runScheduledMaintenance(database = getD1()) {
       ran: true,
       ok: false,
       auditRetention,
+      backup,
       error: message,
       schedule: await getVacuumSchedule(database, false),
     };

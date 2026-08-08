@@ -12,6 +12,9 @@ Docker remains the recommended option when you want portable self-hosting and
 direct SQLite backups. The Cloudflare option is useful when you prefer a
 managed edge runtime. The two storage backends do not synchronize.
 
+OpenEDL's built-in file backup and VACUUM controls are unavailable for D1.
+Use Cloudflare's D1 backup, restore, and export facilities for that deployment.
+
 ## Prerequisites
 
 - Node.js 24.15 or newer

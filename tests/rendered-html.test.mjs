@@ -95,6 +95,12 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
   );
   assert.match(dashboard, /Maintenance/);
   assert.match(maintenance, /Run database VACUUM/);
+  assert.match(maintenance, /Back up database now/);
+  assert.match(maintenance, /Restore selected backup/);
+  assert.match(maintenance, /Restore uploaded file/);
+  assert.match(maintenance, /Pre-restore safety backup/);
+  assert.match(maintenance, /Save backup schedule/);
+  assert.match(maintenance, /vacuum-time/);
   assert.match(maintenance, /Run VACUUM now\?/);
   assert.match(maintenance, /className="confirm-dialog"/);
   assert.doesNotMatch(maintenance, /window\.confirm/);
@@ -103,6 +109,8 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
   assert.match(maintenance, /Disabled by default/);
   assert.match(maintenanceRoute, /Administrator access is required/);
   assert.match(maintenanceRoute, /vacuumDatabase/);
+  assert.match(maintenanceRoute, /restoreDatabaseBackup/);
+  assert.match(maintenanceRoute, /restoreUploadedDatabaseBackup/);
   assert.match(maintenanceRoute, /updateAuditRetention/);
   assert.match(blockAudit, /All lists/);
   assert.match(blockAudit, /Upstream:/);
@@ -113,6 +121,18 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
   assert.match(
     styles,
     /\.code-preview[\s\S]*background: var\(--preview-background, var\(--forest\)\)/,
+  );
+  assert.match(
+    styles,
+    /\.maintenance-grid[\s\S]*align-items: start/,
+  );
+  assert.match(
+    styles,
+    /\.maintenance-column[\s\S]*align-content: start[\s\S]*gap: 20px/,
+  );
+  assert.match(
+    styles,
+    /\.maintenance-schedule \.field[\s\S]*grid-template-rows: auto 42px 13px/,
   );
   assert.doesNotMatch(styles, /background: #11271d/);
   assert.match(layout, /const title = "OpenEDL"/);
