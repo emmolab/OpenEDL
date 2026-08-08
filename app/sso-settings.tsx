@@ -79,6 +79,8 @@ function microsoftTenantId(issuer: string) {
 export function SsoSettings({ apiFetch, setNotice }: Props) {
   const [providers, setProviders] = useState<ProviderSetting[]>([]);
   const [encryptionConfigured, setEncryptionConfigured] = useState(false);
+  const [emergencyLocalAuthEnabled, setEmergencyLocalAuthEnabled] =
+    useState(false);
   const [ssoEnforced, setSsoEnforced] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -97,6 +99,7 @@ export function SsoSettings({ apiFetch, setNotice }: Props) {
       const payload = (await response.json()) as {
         providers?: ProviderSetting[];
         encryptionConfigured?: boolean;
+        emergencyLocalAuthEnabled?: boolean;
         ssoEnforced?: boolean;
         error?: string;
       };
@@ -105,6 +108,9 @@ export function SsoSettings({ apiFetch, setNotice }: Props) {
       }
       setProviders(payload.providers ?? []);
       setEncryptionConfigured(Boolean(payload.encryptionConfigured));
+      setEmergencyLocalAuthEnabled(
+        Boolean(payload.emergencyLocalAuthEnabled),
+      );
       setSsoEnforced(Boolean(payload.ssoEnforced));
     } catch (loadError) {
       setError(
@@ -263,7 +269,9 @@ export function SsoSettings({ apiFetch, setNotice }: Props) {
     if (
       nextValue &&
       !window.confirm(
-        "Enforce SSO now? Existing local sessions will be signed out. Confirm that SSO sign-in works and record the emergency local sign-in URL first.",
+        emergencyLocalAuthEnabled
+          ? "Enforce SSO now? Existing local sessions will be signed out. Confirm that SSO sign-in works and record the emergency local sign-in URL first."
+          : "Enforce SSO now? Existing local sessions will be signed out and emergency local sign-in is disabled. Confirm that SSO sign-in works first.",
       )
     ) {
       return;
@@ -347,8 +355,18 @@ export function SsoSettings({ apiFetch, setNotice }: Props) {
             sessions.
           </p>
           <p className="recovery-url">
-            Emergency local administrator access remains available at{" "}
-            <code>{`${origin}/?local_recovery=1`}</code>.
+            {emergencyLocalAuthEnabled ? (
+              <>
+                Emergency local administrator access is enabled at{" "}
+                <code>{`${origin}/?local_recovery=1`}</code>.
+              </>
+            ) : (
+              <>
+                Emergency local administrator access is disabled. Set{" "}
+                <code>EMERGENCY_LOCAL_AUTH_ENABLED=true</code> in the deployment
+                environment and restart OpenEDL to enable it.
+              </>
+            )}
           </p>
         </div>
         <button

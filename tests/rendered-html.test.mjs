@@ -88,6 +88,7 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
   assert.match(ssoSettings, /Directory \(tenant\) ID/);
   assert.match(ssoSettings, /Enforce SSO/);
   assert.match(ssoSettings, /emergency local sign-in URL/);
+  assert.match(ssoSettings, /EMERGENCY_LOCAL_AUTH_ENABLED=true/);
   assert.match(
     ssoSettings,
     /login\.microsoftonline\.com\/\$\{form\.tenantId\}/,

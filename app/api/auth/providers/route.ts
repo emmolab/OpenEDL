@@ -1,5 +1,6 @@
 import {
   hasAdminToken,
+  isEmergencyLocalAuthEnabled,
   isSsoEnforced,
   listOidcProviders,
 } from "../../../../lib/auth";
@@ -10,6 +11,7 @@ export async function GET() {
     return Response.json({
       providers: await listOidcProviders(),
       adminTokenEnabled: hasAdminToken(),
+      emergencyLocalAuthEnabled: isEmergencyLocalAuthEnabled(),
       localAuthEnabled: !ssoEnforced,
       ssoEnforced,
     });

@@ -2,6 +2,7 @@ import {
   createOidcProviderSetting,
   getManagementIdentity,
   hasConfigEncryptionKey,
+  isEmergencyLocalAuthEnabled,
   isSsoEnforced,
   listOidcProviderSettings,
   updateSsoEnforcement,
@@ -27,6 +28,7 @@ export async function GET(request: Request) {
   return Response.json({
     providers: await listOidcProviderSettings(),
     encryptionConfigured: hasConfigEncryptionKey(),
+    emergencyLocalAuthEnabled: isEmergencyLocalAuthEnabled(),
     ssoEnforced: await isSsoEnforced(),
   });
 }

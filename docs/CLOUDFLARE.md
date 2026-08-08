@@ -83,6 +83,7 @@ AUTH_ALLOWED_DOMAINS=example.com
 AUTH_ALLOWED_EMAILS=
 OIDC_PROVIDERS_JSON=[]
 ADMIN_TOKEN=
+EMERGENCY_LOCAL_AUTH_ENABLED=false
 ```
 
 The first visit displays a one-time administrator creation screen. Complete it

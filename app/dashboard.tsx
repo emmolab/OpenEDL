@@ -195,12 +195,16 @@ export function Dashboard() {
   const [adminTokenEnabled, setAdminTokenEnabled] = useState(false);
   const [localAuthEnabled, setLocalAuthEnabled] = useState(true);
   const [ssoEnforced, setSsoEnforced] = useState(false);
-  const [emergencyLocalRecovery] = useState(() =>
+  const [emergencyLocalRecoveryRequested] = useState(() =>
     typeof window === "undefined"
       ? false
       : new URLSearchParams(window.location.search).get("local_recovery") ===
         "1",
   );
+  const [emergencyLocalAuthEnabled, setEmergencyLocalAuthEnabled] =
+    useState(false);
+  const emergencyLocalRecovery =
+    emergencyLocalAuthEnabled && emergencyLocalRecoveryRequested;
   const [setupRequired, setSetupRequired] = useState<boolean | null>(null);
   const [currentUser, setCurrentUser] = useState<ManagementUser | null>(null);
   const [brandingImageVersion, setBrandingImageVersion] = useState<
@@ -307,6 +311,7 @@ export function Dashboard() {
               (await response.json()) as {
                 providers?: AuthProvider[];
                 adminTokenEnabled?: boolean;
+                emergencyLocalAuthEnabled?: boolean;
                 localAuthEnabled?: boolean;
                 ssoEnforced?: boolean;
               },
@@ -314,6 +319,9 @@ export function Dashboard() {
           .then((payload) => {
             setProviders(payload.providers ?? []);
             setAdminTokenEnabled(Boolean(payload.adminTokenEnabled));
+            setEmergencyLocalAuthEnabled(
+              Boolean(payload.emergencyLocalAuthEnabled),
+            );
             setLocalAuthEnabled(payload.localAuthEnabled !== false);
             setSsoEnforced(Boolean(payload.ssoEnforced));
           }),
@@ -975,11 +983,13 @@ export function Dashboard() {
               </div>
             </>
           )}
-          {ssoEnforced && !emergencyLocalRecovery && (
-            <Link className="emergency-auth-link" href="/?local_recovery=1">
-              SSO unavailable? Use emergency local access
-            </Link>
-          )}
+          {ssoEnforced &&
+            emergencyLocalAuthEnabled &&
+            !emergencyLocalRecovery && (
+              <Link className="emergency-auth-link" href="/?local_recovery=1">
+                SSO unavailable? Use emergency local access
+              </Link>
+            )}
           {adminTokenEnabled && (
             <div className="auth-divider">
               <span>or use recovery access</span>

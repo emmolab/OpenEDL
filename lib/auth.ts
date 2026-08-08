@@ -5,6 +5,7 @@ import { logInfo } from "./logging";
 
 type RuntimeEnv = {
   ADMIN_TOKEN?: string;
+  EMERGENCY_LOCAL_AUTH_ENABLED?: string;
   AUTH_BASE_URL?: string;
   AUTH_ALLOWED_DOMAINS?: string;
   AUTH_ALLOWED_EMAILS?: string;
@@ -300,6 +301,12 @@ export async function updateSsoEnforcement(enforced: boolean) {
 
 export function hasAdminToken() {
   return Boolean(runtimeEnv.ADMIN_TOKEN?.trim());
+}
+
+export function isEmergencyLocalAuthEnabled() {
+  return (
+    runtimeEnv.EMERGENCY_LOCAL_AUTH_ENABLED?.trim().toLowerCase() === "true"
+  );
 }
 
 async function getProvider(providerId: string) {
@@ -1383,6 +1390,12 @@ export async function loginWithLocalAccount(
   password: string,
   options: { emergencyRecovery?: boolean } = {},
 ) {
+  if (options.emergencyRecovery && !isEmergencyLocalAuthEnabled()) {
+    throw new LocalAuthenticationError(
+      "Emergency local sign-in is disabled.",
+      403,
+    );
+  }
   await ensureDatabase();
   const database = getD1();
   const ssoEnforced = await isSsoEnforced();

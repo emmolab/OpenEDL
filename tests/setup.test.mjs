@@ -56,6 +56,7 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
       AUTH_BASE_URL: baseUrl,
       CONFIG_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
       DATABASE_PATH: join(workingDirectory, "openedl.sqlite"),
+      EMERGENCY_LOCAL_AUTH_ENABLED: "true",
       HOST: "127.0.0.1",
       HOSTNAME: "127.0.0.1",
       LOCAL_AUTH_BOOTSTRAP_EMAIL: "legacy-bootstrap@example.com",
@@ -898,6 +899,7 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
   );
   const enforcedProviders = await enforcedProvidersResponse.json();
   assert.equal(enforcedProviders.ssoEnforced, true);
+  assert.equal(enforcedProviders.emergencyLocalAuthEnabled, true);
   assert.equal(enforcedProviders.localAuthEnabled, false);
 
   const revokedLocalSessionResponse = await fetch(
@@ -971,4 +973,104 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
   });
   assert.equal(disableSsoResponse.status, 200);
   assert.equal((await disableSsoResponse.json()).ssoEnforced, false);
+});
+
+test("emergency local authentication is disabled unless explicitly enabled", {
+  timeout: 45_000,
+}, async (context) => {
+  const workingDirectory = await mkdtemp(join(tmpdir(), "openedl-recovery-off-"));
+  const port = await availablePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  let logs = "";
+  const child = spawn(process.execPath, ["dist/standalone/server.js"], {
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      ADMIN_TOKEN: "",
+      AUTH_BASE_URL: baseUrl,
+      CONFIG_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
+      DATABASE_PATH: join(workingDirectory, "openedl.sqlite"),
+      EMERGENCY_LOCAL_AUTH_ENABLED: "",
+      HOST: "127.0.0.1",
+      HOSTNAME: "127.0.0.1",
+      MICROSOFT_OIDC_CLIENT_ID: "",
+      MICROSOFT_OIDC_CLIENT_SECRET: "",
+      MICROSOFT_OIDC_TENANT_ID: "",
+      OIDC_PROVIDERS_JSON: "",
+      PORT: String(port),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout.on("data", (chunk) => {
+    logs += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    logs += chunk;
+  });
+
+  context.after(async () => {
+    if (child.exitCode === null) {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+    await rm(workingDirectory, { force: true, recursive: true });
+  });
+
+  await waitForServer(baseUrl, child, () => logs);
+
+  const providersResponse = await fetch(`${baseUrl}/api/auth/providers`);
+  assert.equal(providersResponse.status, 200);
+  assert.equal(
+    (await providersResponse.json()).emergencyLocalAuthEnabled,
+    false,
+  );
+
+  const setupResponse = await fetch(`${baseUrl}/api/setup`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      name: "Recovery test administrator",
+      email: "recovery@example.com",
+      password: "correct horse battery staple",
+    }),
+  });
+  assert.equal(setupResponse.status, 201);
+  const cookie = setupResponse.headers.get("set-cookie")?.split(";", 1)[0];
+  assert.match(cookie ?? "", /^openedl_session=/);
+
+  const createProviderResponse = await fetch(`${baseUrl}/api/settings/sso`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({
+      id: "recovery-test-sso",
+      name: "Recovery Test SSO",
+      issuer: "https://identity.example.com",
+      discoveryUrl:
+        "https://identity.example.com/.well-known/openid-configuration",
+      clientId: "openedl-recovery-test",
+      clientSecret: "test client secret",
+      scopes: "openid profile email",
+      enabled: true,
+    }),
+  });
+  assert.equal(createProviderResponse.status, 201);
+
+  const enforceResponse = await fetch(`${baseUrl}/api/settings/sso`, {
+    method: "PATCH",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ enforceSso: true }),
+  });
+  assert.equal(enforceResponse.status, 200);
+
+  const recoveryResponse = await fetch(`${baseUrl}/api/auth/local/recovery`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      email: "recovery@example.com",
+      password: "correct horse battery staple",
+    }),
+  });
+  assert.equal(recoveryResponse.status, 403);
+  assert.match((await recoveryResponse.json()).error, /disabled/);
+  assert.equal(recoveryResponse.headers.get("set-cookie"), null);
 });
