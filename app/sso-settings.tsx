@@ -79,6 +79,7 @@ function microsoftTenantId(issuer: string) {
 export function SsoSettings({ apiFetch, setNotice }: Props) {
   const [providers, setProviders] = useState<ProviderSetting[]>([]);
   const [encryptionConfigured, setEncryptionConfigured] = useState(false);
+  const [ssoEnforced, setSsoEnforced] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<ProviderForm>(emptyProvider);
@@ -96,6 +97,7 @@ export function SsoSettings({ apiFetch, setNotice }: Props) {
       const payload = (await response.json()) as {
         providers?: ProviderSetting[];
         encryptionConfigured?: boolean;
+        ssoEnforced?: boolean;
         error?: string;
       };
       if (!response.ok) {
@@ -103,6 +105,7 @@ export function SsoSettings({ apiFetch, setNotice }: Props) {
       }
       setProviders(payload.providers ?? []);
       setEncryptionConfigured(Boolean(payload.encryptionConfigured));
+      setSsoEnforced(Boolean(payload.ssoEnforced));
     } catch (loadError) {
       setError(
         loadError instanceof Error
@@ -255,6 +258,48 @@ export function SsoSettings({ apiFetch, setNotice }: Props) {
     }
   }
 
+  async function toggleSsoEnforcement() {
+    const nextValue = !ssoEnforced;
+    if (
+      nextValue &&
+      !window.confirm(
+        "Enforce SSO now? Existing local sessions will be signed out. Confirm that SSO sign-in works and record the emergency local sign-in URL first.",
+      )
+    ) {
+      return;
+    }
+    setBusy("enforcement");
+    setError("");
+    try {
+      const response = await apiFetch("/api/settings/sso", {
+        method: "PATCH",
+        body: JSON.stringify({ enforceSso: nextValue }),
+      });
+      const payload = (await response.json()) as {
+        ssoEnforced?: boolean;
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to update SSO enforcement.");
+      }
+      setSsoEnforced(Boolean(payload.ssoEnforced));
+      setNotice(
+        nextValue
+          ? "SSO enforced. Local sessions have been signed out."
+          : "SSO enforcement disabled. Local sign-in is available again.",
+      );
+      if (nextValue) window.location.assign("/");
+    } catch (enforcementError) {
+      setError(
+        enforcementError instanceof Error
+          ? enforcementError.message
+          : "Unable to update SSO enforcement.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <>
       <section className="page-heading users-heading">
@@ -291,6 +336,37 @@ export function SsoSettings({ apiFetch, setNotice }: Props) {
           </p>
         </section>
       )}
+
+      <section className="panel settings-panel sso-enforcement-panel">
+        <div>
+          <p className="eyebrow">Authentication policy</p>
+          <h2>Enforce SSO</h2>
+          <p>
+            Hide ordinary local sign-in and require an enabled OIDC provider
+            for management access. Enabling this signs out existing local
+            sessions.
+          </p>
+          <p className="recovery-url">
+            Emergency local administrator access remains available at{" "}
+            <code>{`${origin}/?local_recovery=1`}</code>.
+          </p>
+        </div>
+        <button
+          className={ssoEnforced ? "secondary-button" : "primary-button"}
+          type="button"
+          disabled={
+            busy === "enforcement" ||
+            (!ssoEnforced && !providers.some((provider) => provider.enabled))
+          }
+          onClick={toggleSsoEnforcement}
+        >
+          {busy === "enforcement"
+            ? "Updating…"
+            : ssoEnforced
+              ? "Allow local sign-in"
+              : "Enforce SSO"}
+        </button>
+      </section>
 
       <section className="panel settings-panel">
         <div className="panel-heading">

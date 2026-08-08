@@ -1,7 +1,10 @@
 import {
+  getAuditRetentionSettings,
   getDatabaseStats,
   getSourceSafetyLimits,
   getVacuumSchedule,
+  runAuditRetention,
+  updateAuditRetention,
   updateVacuumSchedule,
   updateSourceSafetyLimits,
   type VacuumSchedule,
@@ -30,6 +33,7 @@ export async function GET(request: Request) {
     limits: await getSourceSafetyLimits(),
     database: await getDatabaseStats(),
     vacuumSchedule: await getVacuumSchedule(),
+    auditRetention: await getAuditRetentionSettings(),
   });
 }
 
@@ -41,7 +45,13 @@ export async function PATCH(request: Request) {
       remoteSourceMaxMb?: number;
       apiSourceMaxMb?: number;
       vacuumSchedule?: VacuumSchedule;
+      auditRetentionDays?: number;
     };
+    if (payload.auditRetentionDays !== undefined) {
+      return Response.json({
+        auditRetention: await updateAuditRetention(payload.auditRetentionDays),
+      });
+    }
     if (payload.vacuumSchedule !== undefined) {
       return Response.json({
         vacuumSchedule: await updateVacuumSchedule(payload.vacuumSchedule),
@@ -70,6 +80,9 @@ export async function POST(request: Request) {
   if (unauthorized) return unauthorized;
   try {
     const payload = (await request.json()) as { action?: string };
+    if (payload.action === "audit_retention") {
+      return Response.json(await runAuditRetention(undefined, true, true));
+    }
     if (payload.action !== "vacuum") {
       return Response.json(
         { error: "Unsupported maintenance action." },
@@ -83,7 +96,7 @@ export async function POST(request: Request) {
         error:
           error instanceof Error
             ? error.message
-            : "Unable to compact the database.",
+            : "Unable to run maintenance.",
       },
       { status: 409 },
     );

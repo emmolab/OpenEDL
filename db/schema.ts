@@ -170,6 +170,7 @@ export const blockAuditEvents = sqliteTable(
     entry: text("entry").notNull(),
     action: text("action", { enum: ["blocked", "unblocked"] }).notNull(),
     reason: text("reason").notNull().default("source_refresh"),
+    sourceNames: text("source_names").notNull().default("[]"),
     occurredAt: text("occurred_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [

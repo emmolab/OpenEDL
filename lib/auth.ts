@@ -243,6 +243,61 @@ export async function listOidcProviders() {
   return (await configuredProviders()).map(({ id, name }) => ({ id, name }));
 }
 
+export async function isSsoEnforced() {
+  await ensureDatabase();
+  const setting = await getD1()
+    .prepare("SELECT value FROM app_settings WHERE key = 'sso_enforced'")
+    .first<{ value: string }>();
+  return setting?.value === "1";
+}
+
+export async function updateSsoEnforcement(enforced: boolean) {
+  await ensureDatabase();
+  const database = getD1();
+  if (enforced) {
+    if ((await configuredProviders()).length === 0) {
+      throw new Error(
+        "Configure and enable at least one SSO provider before enforcing SSO.",
+      );
+    }
+    const localAdministrator = await database
+      .prepare(
+        `SELECT id FROM auth_users
+         WHERE provider = 'local' AND role = 'admin' AND active = 1
+           AND deleted_at IS NULL AND password_hash IS NOT NULL
+         LIMIT 1`,
+      )
+      .first<{ id: number }>();
+    if (!localAdministrator) {
+      throw new Error(
+        "An active local administrator is required for emergency recovery before SSO can be enforced.",
+      );
+    }
+  }
+
+  const statements = [
+    database
+      .prepare(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('sso_enforced', ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(key) DO UPDATE SET
+           value = excluded.value,
+           updated_at = CURRENT_TIMESTAMP`,
+      )
+      .bind(enforced ? "1" : "0"),
+  ];
+  if (enforced) {
+    statements.push(
+      database.prepare(
+        `DELETE FROM auth_sessions
+         WHERE user_id IN (SELECT id FROM auth_users WHERE provider = 'local')`,
+      ),
+    );
+  }
+  await database.batch(statements);
+  logInfo("auth.sso.enforcement_updated", { enforced });
+}
+
 export function hasAdminToken() {
   return Boolean(runtimeEnv.ADMIN_TOKEN?.trim());
 }
@@ -461,6 +516,20 @@ export async function updateOidcProviderSetting(
     scopes: input.scopes ?? existing.scopes,
     enabled: input.enabled ?? Boolean(existing.enabled),
   });
+  if (existing.enabled && !setting.enabled && (await isSsoEnforced())) {
+    const otherEnabledProvider = await database
+      .prepare(
+        `SELECT id FROM oidc_providers
+         WHERE enabled = 1 AND id <> ? LIMIT 1`,
+      )
+      .bind(providerId)
+      .first<{ id: string }>();
+    if (!otherEnabledProvider && environmentProviders().length === 0) {
+      throw new Error(
+        "Disable SSO enforcement before disabling the last enabled provider.",
+      );
+    }
+  }
   let ciphertext: string | null = null;
   let iv: string | null = null;
   if (input.clientSecret) {
@@ -503,7 +572,27 @@ export async function updateOidcProviderSetting(
 
 export async function deleteOidcProviderSetting(providerId: string) {
   await ensureDatabase();
-  const result = await getD1()
+  const database = getD1();
+  const existing = await database
+    .prepare("SELECT enabled FROM oidc_providers WHERE id = ?")
+    .bind(providerId)
+    .first<{ enabled: number }>();
+  if (!existing) throw new Error("GUI-managed OIDC provider not found.");
+  if (existing.enabled && (await isSsoEnforced())) {
+    const otherEnabledProvider = await database
+      .prepare(
+        `SELECT id FROM oidc_providers
+         WHERE enabled = 1 AND id <> ? LIMIT 1`,
+      )
+      .bind(providerId)
+      .first<{ id: string }>();
+    if (!otherEnabledProvider && environmentProviders().length === 0) {
+      throw new Error(
+        "Disable SSO enforcement before deleting the last enabled provider.",
+      );
+    }
+  }
+  const result = await database
     .prepare("DELETE FROM oidc_providers WHERE id = ?")
     .bind(providerId)
     .run();
@@ -1292,9 +1381,17 @@ export async function loginWithLocalAccount(
   request: Request,
   emailValue: string,
   password: string,
+  options: { emergencyRecovery?: boolean } = {},
 ) {
   await ensureDatabase();
   const database = getD1();
+  const ssoEnforced = await isSsoEnforced();
+  if (ssoEnforced && !options.emergencyRecovery) {
+    throw new LocalAuthenticationError(
+      "Local sign-in is disabled because SSO is enforced.",
+      403,
+    );
+  }
   let email: string;
   try {
     email = normalizedEmail(emailValue);
@@ -1304,7 +1401,7 @@ export async function loginWithLocalAccount(
 
   const user = await database
     .prepare(
-      `SELECT id, active, password_hash, password_salt, password_iterations,
+      `SELECT id, active, role, password_hash, password_salt, password_iterations,
               locked_until > CURRENT_TIMESTAMP AS locked
        FROM auth_users
        WHERE provider = 'local' AND subject = ?`,
@@ -1313,6 +1410,7 @@ export async function loginWithLocalAccount(
     .first<{
       id: number;
       active: number;
+      role: ManagementRole;
       password_hash: string | null;
       password_salt: string | null;
       password_iterations: number | null;
@@ -1342,7 +1440,11 @@ export async function loginWithLocalAccount(
       user.password_salt ?? "",
       user.password_iterations ?? PASSWORD_ITERATIONS,
     ));
-  if (!valid || !user.active) {
+  if (
+    !valid ||
+    !user.active ||
+    (options.emergencyRecovery && user.role !== "admin")
+  ) {
     await database
       .prepare(
         `UPDATE auth_users SET
@@ -1372,7 +1474,12 @@ export async function loginWithLocalAccount(
     )
     .bind(user.id)
     .run();
-  logInfo("auth.local.succeeded", { userId: user.id });
+  logInfo(
+    options.emergencyRecovery
+      ? "auth.local.emergency_recovery_succeeded"
+      : "auth.local.succeeded",
+    { userId: user.id, ssoEnforced },
+  );
   return createSession(request, user.id);
 }
 

@@ -17,7 +17,9 @@ OpenEDL turns noisy upstream threat intelligence into a small set of reliable, v
 - Combine include and exclude sources into one deduplicated published endpoint.
 - Keep serving the last-known-good list when an upstream source fails.
 - Configure per-source refresh schedules from five minutes to weekly.
-- Use local email/password accounts or OIDC SSO with Google, Microsoft Entra ID, or a custom provider.
+- Use local email/password accounts or OIDC SSO with Google, Microsoft Entra ID, or a custom provider, with optional SSO enforcement and emergency local recovery.
+- Upload a shared application logo that also becomes the browser favicon.
+- Audit IP, domain, and URL membership changes with upstream-source attribution and optional retention cleanup.
 - Store management sessions in HttpOnly cookies and encrypt GUI-managed provider/feed secrets with AES-GCM.
 - Deploy with Docker and SQLite, or run serverlessly on Cloudflare Workers with D1.
 
@@ -50,11 +52,17 @@ npm ci
 npm run dev
 ```
 
-The dashboard runs at `http://localhost:3000`. A seeded list is published at:
+The dashboard runs at `http://localhost:3000`. It publishes separate,
+type-safe endpoints for IPs, domains, and URLs:
 
 ```text
 http://localhost:3000/edl/perimeter-blocklist
+http://localhost:3000/edl/domain-blocklist
+http://localhost:3000/edl/url-blocklist
 ```
+
+The domain and URL outputs start empty so you can choose appropriate sources
+for your environment. They never share sources or entries with the IP output.
 
 ## Configuration notes
 

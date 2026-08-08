@@ -19,6 +19,9 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
     nextConfig,
     proxy,
     securityHeaders,
+    blockAudit,
+    appearance,
+    styles,
   ] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/dashboard.tsx", import.meta.url), "utf8"),
@@ -41,19 +44,30 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../proxy.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/security-headers.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/block-audit.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/appearance-settings.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /<Dashboard \/>/);
   assert.match(dashboard, /Threat feed,/);
   assert.match(dashboard, /Published endpoint/);
+  assert.match(dashboard, /Published list type/);
+  assert.match(dashboard, /local_recovery/);
   assert.match(dashboard, /Add & validate/);
   assert.match(dashboard, /Continue with \{provider\.name\}/);
-  assert.match(dashboard, /<InitialSetup onComplete=/);
+  assert.match(dashboard, /<InitialSetup/);
+  assert.match(dashboard, /brandingImageVersion/);
   assert.match(setup, /Create your administrator/);
   assert.match(setup, /This screen closes permanently/);
   assert.match(setupRoute, /createInitialAdministrator/);
   assert.match(dashboard, /Refresh schedule/);
   assert.match(dashboard, /CSV \/ manual/);
+  assert.match(dashboard, /malware\.example/);
+  assert.match(dashboard, /Malicious URL feed/);
+  assert.match(dashboard, /BUILT_IN_PREVIEW_PALETTES\[appTheme\]/);
+  assert.match(dashboard, /--preview-background/);
+  assert.match(dashboard, /--preview-accent/);
   assert.match(dashboard, /Recorded Future/);
   assert.match(dashboard, /X-RFToken/);
   assert.match(dashboard, /Edit remote or API source/);
@@ -72,6 +86,8 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
   assert.match(securityHeaders, /X-Content-Type-Options/);
   assert.match(securityHeaders, /script-src-attr 'none'/);
   assert.match(ssoSettings, /Directory \(tenant\) ID/);
+  assert.match(ssoSettings, /Enforce SSO/);
+  assert.match(ssoSettings, /emergency local sign-in URL/);
   assert.match(
     ssoSettings,
     /login\.microsoftonline\.com\/\$\{form\.tenantId\}/,
@@ -82,9 +98,24 @@ test("ships the OpenEDL dashboard instead of starter content", async () => {
   assert.match(maintenance, /className="confirm-dialog"/);
   assert.doesNotMatch(maintenance, /window\.confirm/);
   assert.match(maintenance, /Authenticated API feed limit/);
+  assert.match(maintenance, /Audit retention/);
+  assert.match(maintenance, /Disabled by default/);
   assert.match(maintenanceRoute, /Administrator access is required/);
   assert.match(maintenanceRoute, /vacuumDatabase/);
+  assert.match(maintenanceRoute, /updateAuditRetention/);
+  assert.match(blockAudit, /All lists/);
+  assert.match(blockAudit, /Upstream:/);
+  assert.doesNotMatch(blockAudit, /All IP lists/);
+  assert.match(appearance, /draft\.navigation/);
+  assert.match(appearance, /draft\.accent/);
+  assert.match(appearance, /draft\.background/);
+  assert.match(
+    styles,
+    /\.code-preview[\s\S]*background: var\(--preview-background, var\(--forest\)\)/,
+  );
+  assert.doesNotMatch(styles, /background: #11271d/);
   assert.match(layout, /const title = "OpenEDL"/);
+  assert.match(layout, /\/api\/branding\/image\?v=/);
   assert.match(layout, /openGraph/);
   assert.match(auth, /code_challenge_method", "S256"/);
   assert.match(auth, /payload\.nonce !== challenge\.nonce/);

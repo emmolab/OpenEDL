@@ -20,6 +20,15 @@ type MaintenanceData = {
   limits: Limits;
   database: DatabaseStats;
   vacuumSchedule: VacuumScheduleSettings;
+  auditRetention: AuditRetentionSettings;
+};
+
+type AuditRetentionSettings = {
+  days: number;
+  enabled: boolean;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastDeleted: number;
 };
 
 type VacuumSchedule = "disabled" | "daily" | "weekly" | "monthly";
@@ -66,11 +75,17 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
   const [apiLimit, setApiLimit] = useState(20);
   const [vacuumSchedule, setVacuumSchedule] =
     useState<VacuumSchedule>("disabled");
+  const [auditRetentionEnabled, setAuditRetentionEnabled] = useState(false);
+  const [auditRetentionDays, setAuditRetentionDays] = useState(90);
   const [error, setError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isVacuuming, setIsVacuuming] = useState(false);
   const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+  const [isSavingRetention, setIsSavingRetention] = useState(false);
+  const [isRunningRetention, setIsRunningRetention] = useState(false);
   const [showVacuumConfirmation, setShowVacuumConfirmation] = useState(false);
+  const [showRetentionConfirmation, setShowRetentionConfirmation] =
+    useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -87,6 +102,8 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
       setRemoteLimit(payload.limits.remoteSourceMaxMb);
       setApiLimit(payload.limits.apiSourceMaxMb);
       setVacuumSchedule(payload.vacuumSchedule.schedule);
+      setAuditRetentionEnabled(payload.auditRetention.enabled);
+      setAuditRetentionDays(payload.auditRetention.days || 90);
       setError("");
     } catch (loadError) {
       setError(
@@ -102,13 +119,16 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
   }, [load]);
 
   useEffect(() => {
-    if (!showVacuumConfirmation) return;
+    if (!showVacuumConfirmation && !showRetentionConfirmation) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setShowVacuumConfirmation(false);
+      if (event.key === "Escape") {
+        setShowVacuumConfirmation(false);
+        setShowRetentionConfirmation(false);
+      }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [showVacuumConfirmation]);
+  }, [showRetentionConfirmation, showVacuumConfirmation]);
 
   async function saveLimits(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -215,6 +235,84 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
     }
   }
 
+  async function saveAuditRetention(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSavingRetention(true);
+    setError("");
+    try {
+      const response = await apiFetch("/api/settings/maintenance", {
+        method: "PATCH",
+        body: JSON.stringify({
+          auditRetentionDays: auditRetentionEnabled ? auditRetentionDays : 0,
+        }),
+      });
+      const payload = (await response.json()) as {
+        auditRetention?: AuditRetentionSettings;
+        error?: string;
+      };
+      if (!response.ok || !payload.auditRetention) {
+        throw new Error(payload.error ?? "Unable to save audit retention.");
+      }
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              auditRetention: payload.auditRetention as AuditRetentionSettings,
+            }
+          : current,
+      );
+      setNotice(
+        payload.auditRetention.enabled
+          ? `Audit records older than ${payload.auditRetention.days} days will be deleted automatically.`
+          : "Automatic audit retention cleanup disabled.",
+      );
+    } catch (retentionError) {
+      setError(
+        retentionError instanceof Error
+          ? retentionError.message
+          : "Unable to save audit retention.",
+      );
+    } finally {
+      setIsSavingRetention(false);
+    }
+  }
+
+  async function runAuditRetentionNow() {
+    setShowRetentionConfirmation(false);
+    setIsRunningRetention(true);
+    setError("");
+    try {
+      const response = await apiFetch("/api/settings/maintenance", {
+        method: "POST",
+        body: JSON.stringify({ action: "audit_retention" }),
+      });
+      const payload = (await response.json()) as {
+        deleted?: number;
+        settings?: AuditRetentionSettings;
+        error?: string;
+      };
+      if (!response.ok || !payload.settings) {
+        throw new Error(payload.error ?? "Unable to clean audit records.");
+      }
+      setData((current) =>
+        current
+          ? { ...current, auditRetention: payload.settings as AuditRetentionSettings }
+          : current,
+      );
+      setNotice(
+        `Audit retention cleanup complete · ${payload.deleted ?? 0} expired record${payload.deleted === 1 ? "" : "s"} deleted.`,
+      );
+    } catch (retentionError) {
+      setError(
+        retentionError instanceof Error
+          ? retentionError.message
+          : "Unable to clean audit records.",
+      );
+    } finally {
+      setIsRunningRetention(false);
+    }
+  }
+
   return (
     <>
       <section className="page-heading users-heading">
@@ -226,8 +324,8 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
             <em>maintenance.</em>
           </h1>
           <p className="heading-copy">
-            Tune feed download ceilings and reclaim unused SQLite pages from
-            the management portal.
+            Tune feed download ceilings, control audit retention, and reclaim
+            unused SQLite pages from the management portal.
           </p>
         </div>
       </section>
@@ -388,6 +486,78 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
             </button>
           </form>
         </article>
+
+        <article className="panel maintenance-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Audit lifecycle</p>
+              <h2>Audit retention</h2>
+            </div>
+            <span className="format-pill">
+              {data?.auditRetention.enabled ? "Enabled" : "Disabled"}
+            </span>
+          </div>
+          <form className="maintenance-form" onSubmit={saveAuditRetention}>
+            <label className="setting-check">
+              <input
+                type="checkbox"
+                checked={auditRetentionEnabled}
+                onChange={(event) =>
+                  setAuditRetentionEnabled(event.target.checked)
+                }
+              />
+              Automatically delete expired audit records
+            </label>
+            <div className="field">
+              <label htmlFor="audit-retention-days">Retention period</label>
+              <div className="unit-field">
+                <input
+                  id="audit-retention-days"
+                  type="number"
+                  min={1}
+                  max={3650}
+                  step={1}
+                  value={auditRetentionDays}
+                  disabled={!auditRetentionEnabled}
+                  onChange={(event) =>
+                    setAuditRetentionDays(Number(event.target.value))
+                  }
+                  required={auditRetentionEnabled}
+                />
+                <span>days</span>
+              </div>
+              <small>
+                Disabled by default. When enabled, membership events and
+                lifetime entries older than this period are removed daily.
+              </small>
+              {data?.auditRetention.lastRunAt && (
+                <small>
+                  Last cleanup: {dateLabel(data.auditRetention.lastRunAt)} ·{" "}
+                  {data.auditRetention.lastDeleted} records deleted
+                </small>
+              )}
+            </div>
+            <div className="retention-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={
+                  !data?.auditRetention.enabled || isRunningRetention
+                }
+                onClick={() => setShowRetentionConfirmation(true)}
+              >
+                {isRunningRetention ? "Cleaning…" : "Clean expired audit now"}
+              </button>
+              <button
+                className="primary-button"
+                type="submit"
+                disabled={isSavingRetention}
+              >
+                {isSavingRetention ? "Saving…" : "Save audit retention"}
+              </button>
+            </div>
+          </form>
+        </article>
       </section>
 
       {showVacuumConfirmation && (
@@ -432,6 +602,54 @@ export function MaintenanceSettings({ apiFetch, setNotice }: Props) {
                 onClick={() => void vacuum()}
               >
                 Run database VACUUM
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {showRetentionConfirmation && (
+        <div
+          className="drawer-backdrop confirm-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setShowRetentionConfirmation(false);
+            }
+          }}
+        >
+          <section
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="retention-confirm-title"
+            aria-describedby="retention-confirm-description"
+          >
+            <div className="confirm-icon" aria-hidden="true">
+              ≋
+            </div>
+            <p className="eyebrow">Audit maintenance</p>
+            <h2 id="retention-confirm-title">Delete expired audit now?</h2>
+            <p id="retention-confirm-description">
+              OpenEDL will permanently remove membership events and lifetime
+              audit entries older than the configured retention period. This
+              cannot be undone without restoring a database backup.
+            </p>
+            <div className="confirm-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => setShowRetentionConfirmation(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                autoFocus
+                onClick={() => void runAuditRetentionNow()}
+              >
+                Delete expired audit
               </button>
             </div>
           </section>

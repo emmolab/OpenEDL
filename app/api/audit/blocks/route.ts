@@ -48,7 +48,7 @@ export async function POST(request: Request) {
       typeof payload.entry !== "string"
     ) {
       return Response.json(
-        { error: "A valid list and IP entry are required." },
+        { error: "A valid published list and entry are required." },
         { status: 400 },
       );
     }

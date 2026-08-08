@@ -1,12 +1,17 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { BrandMark } from "./brand-mark";
 
 type InitialSetupProps = {
   onComplete(): Promise<void>;
+  brandingImageVersion: string | null;
 };
 
-export function InitialSetup({ onComplete }: InitialSetupProps) {
+export function InitialSetup({
+  onComplete,
+  brandingImageVersion,
+}: InitialSetupProps) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -53,9 +58,7 @@ export function InitialSetup({ onComplete }: InitialSetupProps) {
   return (
     <main className="auth-shell">
       <section className="auth-card setup-card">
-        <div className="brand-mark" aria-hidden="true">
-          OE
-        </div>
+        <BrandMark brandingImageVersion={brandingImageVersion} />
         <p className="eyebrow">First-run setup</p>
         <h1>Create your administrator</h1>
         <p>

@@ -96,6 +96,29 @@ changing it makes existing GUI-managed client secrets unreadable. If it is
 lost, set a new key and re-enter the client secret for every GUI-managed
 provider.
 
+## Enforce SSO and retain break-glass access
+
+After an enabled provider has been configured and tested, **SSO settings**
+offers an **Enforce SSO** button. Enabling it hides and disables ordinary local
+sign-in and revokes existing local-account sessions. SSO sessions and the
+optional `ADMIN_TOKEN` recovery method continue to work.
+
+Before enabling enforcement, save this emergency URL in the team runbook:
+
+```text
+https://YOUR_HOST/?local_recovery=1
+```
+
+That page accepts only an active local administrator account. It is intended
+for identity-provider outages and uses the same password lockout protections as
+normal local sign-in. After using it, open **SSO settings** to repair the
+provider or select **Allow local sign-in**. Keep the local administrator
+password in a controlled break-glass credential store and test it periodically.
+
+OpenEDL requires both an enabled SSO provider and an active password-bearing
+local administrator before enforcement can be turned on. This prevents the
+setting itself from creating an unrecoverable lockout.
+
 ### Environment variables
 
 Environment-defined providers are useful when secrets are managed by an

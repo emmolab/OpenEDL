@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { ChangeEvent, FormEvent, useState } from "react";
 import {
   DEFAULT_CUSTOM_THEME,
   type AppTheme,
@@ -13,6 +13,8 @@ type Props = {
   customTheme: CustomThemeColors;
   onThemeChange: (theme: AppTheme) => void;
   onCustomThemeChange: (theme: CustomThemeColors) => void;
+  brandingImageVersion: string | null;
+  onBrandingImageChange: (version: string | null) => void;
   setNotice: (message: string) => void;
 };
 
@@ -62,10 +64,96 @@ export function AppearanceSettings({
   customTheme,
   onThemeChange,
   onCustomThemeChange,
+  brandingImageVersion,
+  onBrandingImageChange,
   setNotice,
 }: Props) {
   const [draft, setDraft] = useState(customTheme);
   const [isSaving, setIsSaving] = useState(false);
+  const [brandingDraft, setBrandingDraft] = useState<string | null>(null);
+  const [isSavingBranding, setIsSavingBranding] = useState(false);
+
+  function selectBrandingImage(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+      setNotice("Choose a PNG, JPEG, or WebP image.");
+      return;
+    }
+    if (file.size > 1024 * 1024) {
+      setNotice("Branding images must be 1 MB or smaller.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      if (typeof reader.result === "string") setBrandingDraft(reader.result);
+    });
+    reader.addEventListener("error", () => {
+      setNotice("Unable to read the selected image.");
+    });
+    reader.readAsDataURL(file);
+  }
+
+  async function saveBrandingImage() {
+    if (!brandingDraft) return;
+    setIsSavingBranding(true);
+    try {
+      const response = await apiFetch("/api/settings/branding", {
+        method: "PATCH",
+        body: JSON.stringify({ imageDataUrl: brandingDraft }),
+      });
+      const payload = (await response.json()) as {
+        brandingImage?: { version?: string };
+        error?: string;
+      };
+      if (!response.ok || !payload.brandingImage?.version) {
+        throw new Error(payload.error ?? "Unable to update application branding.");
+      }
+      onBrandingImageChange(payload.brandingImage.version);
+      setBrandingDraft(null);
+      setNotice("Application logo and favicon updated.");
+    } catch (error) {
+      setNotice(
+        error instanceof Error
+          ? error.message
+          : "Unable to update application branding.",
+      );
+    } finally {
+      setIsSavingBranding(false);
+    }
+  }
+
+  async function resetBrandingImage() {
+    if (
+      !window.confirm(
+        "Restore the default OpenEDL logo and favicon? The uploaded image will be removed.",
+      )
+    ) {
+      return;
+    }
+    setIsSavingBranding(true);
+    try {
+      const response = await apiFetch("/api/settings/branding", {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const payload = (await response.json()) as { error?: string };
+        throw new Error(payload.error ?? "Unable to reset application branding.");
+      }
+      onBrandingImageChange(null);
+      setBrandingDraft(null);
+      setNotice("Default OpenEDL logo and favicon restored.");
+    } catch (error) {
+      setNotice(
+        error instanceof Error
+          ? error.message
+          : "Unable to reset application branding.",
+      );
+    } finally {
+      setIsSavingBranding(false);
+    }
+  }
 
   async function selectTheme(nextTheme: AppTheme) {
     const previousTheme = theme;
@@ -126,9 +214,9 @@ export function AppearanceSettings({
   }
 
   const customPreview = [
-    customTheme.navigation,
-    customTheme.accent,
-    customTheme.background,
+    draft.navigation,
+    draft.accent,
+    draft.background,
   ];
 
   return (
@@ -142,9 +230,77 @@ export function AppearanceSettings({
             <em>theme.</em>
           </h1>
           <p className="heading-copy">
-            Choose or create the palette used across the dashboard and sign-in
-            page for every OpenEDL user.
+            Upload shared branding and choose the palette used across the
+            dashboard and sign-in page for every OpenEDL user.
           </p>
+        </div>
+      </section>
+
+      <section className="panel branding-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Shared branding</p>
+            <h2>Application logo &amp; favicon</h2>
+          </div>
+          <span className="format-pill">PNG · JPEG · WebP</span>
+        </div>
+        <div className="branding-editor">
+          <div
+            className={`branding-preview${brandingDraft || brandingImageVersion ? " has-image" : ""}`}
+            style={
+              brandingDraft || brandingImageVersion
+                ? {
+                    backgroundImage: `url("${
+                      brandingDraft ??
+                      `/api/branding/image?v=${encodeURIComponent(brandingImageVersion ?? "")}`
+                    }")`,
+                  }
+                : undefined
+            }
+            aria-label="Application logo preview"
+          >
+            {brandingDraft || brandingImageVersion ? null : "OE"}
+          </div>
+          <div className="branding-copy">
+            <strong>Upload one image for every OpenEDL brand mark</strong>
+            <p>
+              The image appears on sign-in, first-run setup, dashboard
+              navigation, and as the browser favicon. A square image with a
+              transparent background works best. Maximum size: 1 MB.
+            </p>
+            <div className="branding-actions">
+              <label className="secondary-button branding-file-button">
+                Choose image
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={selectBrandingImage}
+                />
+              </label>
+              <button
+                className="primary-button"
+                type="button"
+                disabled={!brandingDraft || isSavingBranding}
+                onClick={saveBrandingImage}
+              >
+                {isSavingBranding ? "Saving…" : "Save logo & favicon"}
+              </button>
+              {(brandingDraft || brandingImageVersion) && (
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={isSavingBranding}
+                  onClick={
+                    brandingDraft
+                      ? () => setBrandingDraft(null)
+                      : resetBrandingImage
+                  }
+                >
+                  {brandingDraft ? "Cancel selection" : "Restore default"}
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </section>
 

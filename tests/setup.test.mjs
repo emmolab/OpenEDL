@@ -200,6 +200,7 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
   const defaultAppearance = await defaultAppearanceResponse.json();
   assert.equal(defaultAppearance.theme, "signal");
   assert.match(defaultAppearance.customTheme.navigation, /^#[0-9a-f]{6}$/);
+  assert.equal(defaultAppearance.brandingImage, null);
 
   const unauthorizedAppearanceUpdate = await fetch(
     `${baseUrl}/api/settings/appearance`,
@@ -228,6 +229,7 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
   assert.deepEqual(await appearanceUpdate.json(), {
     theme: "custom",
     customTheme,
+    brandingImage: null,
   });
 
   const savedAppearanceResponse = await fetch(
@@ -236,6 +238,7 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
   assert.deepEqual(await savedAppearanceResponse.json(), {
     theme: "custom",
     customTheme,
+    brandingImage: null,
   });
 
   const invalidAppearanceUpdate = await fetch(
@@ -250,11 +253,147 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
   );
   assert.equal(invalidAppearanceUpdate.status, 400);
 
+  const brandingImageDataUrl =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  const unauthorizedBrandingUpdate = await fetch(
+    `${baseUrl}/api/settings/branding`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ imageDataUrl: brandingImageDataUrl }),
+    },
+  );
+  assert.equal(unauthorizedBrandingUpdate.status, 401);
+
+  const invalidBrandingUpdate = await fetch(
+    `${baseUrl}/api/settings/branding`,
+    {
+      method: "PATCH",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        imageDataUrl: "data:image/png;base64,dGhpcyBpcyBub3QgYSBwbmc=",
+      }),
+    },
+  );
+  assert.equal(invalidBrandingUpdate.status, 400);
+
+  const brandingUpdate = await fetch(`${baseUrl}/api/settings/branding`, {
+    method: "PATCH",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ imageDataUrl: brandingImageDataUrl }),
+  });
+  assert.equal(brandingUpdate.status, 200);
+  const brandingUpdatePayload = await brandingUpdate.json();
+  assert.match(
+    brandingUpdatePayload.brandingImage.version,
+    /^[0-9a-f-]{36}$/,
+  );
+
+  const brandingImageResponse = await fetch(
+    `${baseUrl}/api/branding/image?v=${brandingUpdatePayload.brandingImage.version}`,
+  );
+  assert.equal(brandingImageResponse.status, 200);
+  assert.equal(brandingImageResponse.headers.get("content-type"), "image/png");
+  assert.ok((await brandingImageResponse.arrayBuffer()).byteLength > 8);
+
+  const brandedPageResponse = await fetch(baseUrl);
+  assert.match(
+    await brandedPageResponse.text(),
+    /\/api\/branding\/image\?v=/,
+  );
+  const brandedAppearance = await fetch(
+    `${baseUrl}/api/settings/appearance`,
+  );
+  assert.equal(
+    (await brandedAppearance.json()).brandingImage.version,
+    brandingUpdatePayload.brandingImage.version,
+  );
+
+  const resetBrandingResponse = await fetch(
+    `${baseUrl}/api/settings/branding`,
+    { method: "DELETE", headers: { cookie } },
+  );
+  assert.equal(resetBrandingResponse.status, 204);
+  const removedBrandingImage = await fetch(`${baseUrl}/api/branding/image`);
+  assert.equal(removedBrandingImage.status, 404);
+
   const authenticatedDashboard = await fetch(`${baseUrl}/api/dashboard`, {
     headers: { cookie },
   });
   assert.equal(authenticatedDashboard.status, 200);
   const initialDashboard = await authenticatedDashboard.json();
+  assert.deepEqual(
+    initialDashboard.lists.map((candidate) => ({
+      type: candidate.type,
+      slug: candidate.slug,
+    })),
+    [
+      { type: "ip", slug: "perimeter-blocklist" },
+      { type: "domain", slug: "domain-blocklist" },
+      { type: "url", slug: "url-blocklist" },
+    ],
+  );
+  assert.equal(
+    initialDashboard.lists.some((candidate) =>
+      candidate.sources.some(
+        (sourceCandidate) =>
+          sourceCandidate.name === "Team Cymru Bogons" ||
+          sourceCandidate.url ===
+            "https://www.team-cymru.org/Services/Bogons/fullbogons-ipv4.txt",
+      ),
+    ),
+    false,
+  );
+  for (const type of ["domain", "url"]) {
+    const typedList = initialDashboard.lists.find(
+      (candidate) => candidate.type === type,
+    );
+    assert.ok(typedList);
+    assert.equal(typedList.sources.length, 0);
+    assert.equal(typedList.entryCount, 0);
+    const typedEndpoint = await fetch(`${baseUrl}/edl/${typedList.slug}`);
+    assert.equal(typedEndpoint.status, 200);
+    assert.equal(await typedEndpoint.text(), "");
+  }
+  for (const configuration of [
+    {
+      type: "domain",
+      name: "Local domain intelligence",
+      input: "bad.example\nmalware.example",
+      output: "bad.example\nmalware.example\n",
+    },
+    {
+      type: "url",
+      name: "Local URL intelligence",
+      input: "https://evil.example/path",
+      output: "evil.example/path\n",
+    },
+  ]) {
+    const typedList = initialDashboard.lists.find(
+      (candidate) => candidate.type === configuration.type,
+    );
+    assert.ok(typedList);
+    const createTypedSourceResponse = await fetch(`${baseUrl}/api/sources`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        listId: typedList.id,
+        name: configuration.name,
+        type: configuration.type,
+        format: "text",
+        role: "include",
+        kind: "manual",
+        manualEntries: configuration.input,
+        refreshIntervalMinutes: 60,
+      }),
+    });
+    assert.equal(createTypedSourceResponse.status, 201);
+    const configuredEndpoint = await fetch(
+      `${baseUrl}/edl/${typedList.slug}`,
+    );
+    assert.equal(configuredEndpoint.status, 200);
+    assert.equal(await configuredEndpoint.text(), configuration.output);
+  }
   const source = initialDashboard.lists[0].sources.find(
     (candidate) => candidate.kind === "remote",
   );
@@ -407,6 +546,14 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
       },
       body: JSON.stringify({}),
     }),
+    fetch(`${baseUrl}/api/settings/branding`, {
+      method: "PATCH",
+      headers: {
+        cookie: memberCookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ imageDataUrl: brandingImageDataUrl }),
+    }),
     fetch(`${baseUrl}/api/settings/maintenance`, {
       method: "PATCH",
       headers: {
@@ -460,6 +607,22 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
   const initialAudit = await auditResponse.json();
   assert.ok(initialAudit.activeCount > 0);
   assert.ok(initialAudit.active.length > 0);
+  assert.deepEqual(
+    [...new Set(initialAudit.lists.map((candidate) => candidate.type))].sort(),
+    ["domain", "ip", "url"],
+  );
+  const attributedDomain = initialAudit.active.find(
+    (candidate) => candidate.listType === "domain",
+  );
+  assert.ok(attributedDomain);
+  assert.deepEqual(attributedDomain.sourceNames, ["Local domain intelligence"]);
+  const attributedDomainEvent = initialAudit.events.find(
+    (event) => event.entry === attributedDomain.entry,
+  );
+  assert.ok(attributedDomainEvent);
+  assert.deepEqual(attributedDomainEvent.sourceNames, [
+    "Local domain intelligence",
+  ]);
   assert.ok(initialAudit.allTimeBlockedCount >= initialAudit.activeCount);
   assert.match(initialAudit.note, /per-connection enforcement events/);
   const entryToUnblock = initialAudit.active[0];
@@ -485,6 +648,7 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
   assert.equal(searchedAudit.events[0].entry, entryToUnblock.entry);
   assert.equal(searchedAudit.events[0].action, "unblocked");
   assert.equal(searchedAudit.events[0].reason, "manual_unblock");
+  assert.deepEqual(searchedAudit.events[0].sourceNames, entryToUnblock.sourceNames);
   assert.equal(
     searchedAudit.allTimeBlockedCount,
     initialAudit.allTimeBlockedCount,
@@ -580,6 +744,55 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
     lastStatus: "never",
     lastError: null,
   });
+  assert.deepEqual(maintenance.auditRetention, {
+    days: 0,
+    enabled: false,
+    nextRunAt: null,
+    lastRunAt: null,
+    lastDeleted: 0,
+  });
+
+  const auditRetentionResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    {
+      method: "PATCH",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ auditRetentionDays: 30 }),
+    },
+  );
+  assert.equal(auditRetentionResponse.status, 200);
+  const auditRetention = (await auditRetentionResponse.json()).auditRetention;
+  assert.equal(auditRetention.enabled, true);
+  assert.equal(auditRetention.days, 30);
+  assert.ok(Date.parse(auditRetention.nextRunAt) <= Date.now());
+
+  const runAuditRetentionResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ action: "audit_retention" }),
+    },
+  );
+  assert.equal(runAuditRetentionResponse.status, 200);
+  const auditRetentionRun = await runAuditRetentionResponse.json();
+  assert.equal(auditRetentionRun.ran, true);
+  assert.equal(auditRetentionRun.deleted, 0);
+  assert.ok(auditRetentionRun.settings.lastRunAt);
+
+  const disableAuditRetentionResponse = await fetch(
+    `${baseUrl}/api/settings/maintenance`,
+    {
+      method: "PATCH",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ auditRetentionDays: 0 }),
+    },
+  );
+  assert.equal(disableAuditRetentionResponse.status, 200);
+  assert.equal(
+    (await disableAuditRetentionResponse.json()).auditRetention.enabled,
+    false,
+  );
 
   const scheduleVacuumResponse = await fetch(
     `${baseUrl}/api/settings/maintenance`,
@@ -644,4 +857,118 @@ test("first-run setup ignores legacy bootstrap variables, creates one administra
     auditAfterVacuum.allTimeBlockedCount,
     initialAudit.allTimeBlockedCount,
   );
+
+  const initialSsoSettingsResponse = await fetch(
+    `${baseUrl}/api/settings/sso`,
+    { headers: { cookie } },
+  );
+  assert.equal(initialSsoSettingsResponse.status, 200);
+  assert.equal((await initialSsoSettingsResponse.json()).ssoEnforced, false);
+
+  const createSsoProviderResponse = await fetch(
+    `${baseUrl}/api/settings/sso`,
+    {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "test-sso",
+        name: "Test SSO",
+        issuer: "https://identity.example.com",
+        discoveryUrl:
+          "https://identity.example.com/.well-known/openid-configuration",
+        clientId: "openedl-test-client",
+        clientSecret: "test client secret",
+        scopes: "openid profile email",
+        enabled: true,
+      }),
+    },
+  );
+  assert.equal(createSsoProviderResponse.status, 201);
+
+  const enforceSsoResponse = await fetch(`${baseUrl}/api/settings/sso`, {
+    method: "PATCH",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ enforceSso: true }),
+  });
+  assert.equal(enforceSsoResponse.status, 200);
+  assert.equal((await enforceSsoResponse.json()).ssoEnforced, true);
+
+  const enforcedProvidersResponse = await fetch(
+    `${baseUrl}/api/auth/providers`,
+  );
+  const enforcedProviders = await enforcedProvidersResponse.json();
+  assert.equal(enforcedProviders.ssoEnforced, true);
+  assert.equal(enforcedProviders.localAuthEnabled, false);
+
+  const revokedLocalSessionResponse = await fetch(
+    `${baseUrl}/api/auth/session`,
+    { headers: { cookie } },
+  );
+  assert.equal((await revokedLocalSessionResponse.json()).authenticated, false);
+
+  const disabledLocalLoginResponse = await fetch(
+    `${baseUrl}/api/auth/local`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "admin@example.com",
+        password: "correct horse battery staple",
+      }),
+    },
+  );
+  assert.equal(disabledLocalLoginResponse.status, 403);
+  assert.match(
+    (await disabledLocalLoginResponse.json()).error,
+    /SSO is enforced/,
+  );
+
+  const emergencyLoginResponse = await fetch(
+    `${baseUrl}/api/auth/local/recovery`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "admin@example.com",
+        password: "correct horse battery staple",
+      }),
+    },
+  );
+  assert.equal(emergencyLoginResponse.status, 200);
+  const emergencyCookie = emergencyLoginResponse.headers
+    .get("set-cookie")
+    ?.split(";", 1)[0];
+  assert.match(emergencyCookie ?? "", /^openedl_session=/);
+  const emergencyDashboardResponse = await fetch(`${baseUrl}/api/dashboard`, {
+    headers: { cookie: emergencyCookie },
+  });
+  assert.equal(emergencyDashboardResponse.status, 200);
+
+  const disableLastProviderResponse = await fetch(
+    `${baseUrl}/api/settings/sso/test-sso`,
+    {
+      method: "PATCH",
+      headers: {
+        cookie: emergencyCookie,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ enabled: false }),
+    },
+  );
+  assert.equal(disableLastProviderResponse.status, 400);
+  assert.match(
+    (await disableLastProviderResponse.json()).error,
+    /last enabled provider/,
+  );
+
+  const disableSsoResponse = await fetch(`${baseUrl}/api/settings/sso`, {
+    method: "PATCH",
+    headers: {
+      cookie: emergencyCookie,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ enforceSso: false }),
+  });
+  assert.equal(disableSsoResponse.status, 200);
+  assert.equal((await disableSsoResponse.json()).ssoEnforced, false);
 });

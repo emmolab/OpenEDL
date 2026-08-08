@@ -2,7 +2,9 @@ import {
   createOidcProviderSetting,
   getManagementIdentity,
   hasConfigEncryptionKey,
+  isSsoEnforced,
   listOidcProviderSettings,
+  updateSsoEnforcement,
 } from "../../../../lib/auth";
 
 async function requireAdministrator(request: Request) {
@@ -25,7 +27,34 @@ export async function GET(request: Request) {
   return Response.json({
     providers: await listOidcProviderSettings(),
     encryptionConfigured: hasConfigEncryptionKey(),
+    ssoEnforced: await isSsoEnforced(),
   });
+}
+
+export async function PATCH(request: Request) {
+  const authorizationError = await requireAdministrator(request);
+  if (authorizationError) return authorizationError;
+  try {
+    const payload = (await request.json()) as { enforceSso?: unknown };
+    if (typeof payload.enforceSso !== "boolean") {
+      return Response.json(
+        { error: "enforceSso must be true or false." },
+        { status: 400 },
+      );
+    }
+    await updateSsoEnforcement(payload.enforceSso);
+    return Response.json({ ssoEnforced: payload.enforceSso });
+  } catch (error) {
+    return Response.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unable to update SSO enforcement.",
+      },
+      { status: 400 },
+    );
+  }
 }
 
 export async function POST(request: Request) {

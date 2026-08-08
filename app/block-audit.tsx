@@ -3,17 +3,30 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 
 type AuditData = {
-  lists: Array<{ id: number; name: string; slug: string }>;
-  active: Array<{ listId: number; listName: string; entry: string }>;
+  lists: Array<{
+    id: number;
+    name: string;
+    slug: string;
+    type: "ip" | "domain" | "url";
+  }>;
+  active: Array<{
+    listId: number;
+    listName: string;
+    listType: "ip" | "domain" | "url";
+    entry: string;
+    sourceNames: string[];
+  }>;
   activeCount: number;
   allTimeBlockedCount: number;
   events: Array<{
     id: number;
     list_id: number;
     list_name: string;
+    list_type: "ip" | "domain" | "url";
     entry: string;
     action: "blocked" | "unblocked";
     reason: string;
+    sourceNames: string[];
     occurred_at: string;
   }>;
   note: string;
@@ -93,7 +106,7 @@ export function BlockAudit({ apiFetch, canUnblock, setNotice }: Props) {
   async function unblock(listId: number, entry: string) {
     if (
       !window.confirm(
-        `Exclude ${entry} from this published list? The firewall will stop receiving it on its next EDL pull.`,
+        `Exclude ${entry} from this published list? Downstream security tools will stop receiving it on their next pull.`,
       )
     ) {
       return;
@@ -126,15 +139,16 @@ export function BlockAudit({ apiFetch, canUnblock, setNotice }: Props) {
     <>
       <section className="page-heading users-heading">
         <div>
-          <p className="eyebrow">Firewall change history</p>
+          <p className="eyebrow">Published-list change history</p>
           <h1>
             Block
             <br />
             <em>audit.</em>
           </h1>
           <p className="heading-copy">
-            Search IPs currently published to firewalls, review additions and
-            removals, and place an active entry into a managed exclusion.
+            Search IP, domain, and URL entries, see which upstream sources
+            contributed each block, and place active entries into managed
+            exclusions.
           </p>
         </div>
       </section>
@@ -145,25 +159,25 @@ export function BlockAudit({ apiFetch, canUnblock, setNotice }: Props) {
 
       <section className="audit-summary" aria-label="Block totals">
         <article>
-          <span>Unique entries blocked all time</span>
+          <span>Unique entries in retained audit</span>
           <strong>{displayNumber(data?.allTimeBlockedCount ?? 0)}</strong>
-          <small>Persistent lifetime total</small>
+          <small>Lifetime total while retention allows</small>
         </article>
         <article>
           <span>Currently published</span>
           <strong>{displayNumber(data?.activeCount ?? 0)}</strong>
-          <small>For the selected IP lists</small>
+          <small>For the selected published lists</small>
         </article>
       </section>
 
       <form className="audit-filters" onSubmit={search}>
         <div className="field">
-          <label htmlFor="audit-query">IP address, range, or CIDR</label>
+          <label htmlFor="audit-query">IP, domain, or URL entry</label>
           <input
             id="audit-query"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="203.0.113.8"
+            placeholder="203.0.113.8 or malware.example"
           />
         </div>
         <div className="field">
@@ -173,10 +187,10 @@ export function BlockAudit({ apiFetch, canUnblock, setNotice }: Props) {
             value={selectedList}
             onChange={(event) => setSelectedList(event.target.value)}
           >
-            <option value="">All IP lists</option>
+            <option value="">All lists</option>
             {data?.lists.map((list) => (
               <option key={list.id} value={list.id}>
-                {list.name}
+                {list.name} ({list.type.toUpperCase()})
               </option>
             ))}
           </select>
@@ -200,7 +214,12 @@ export function BlockAudit({ apiFetch, canUnblock, setNotice }: Props) {
               <div className="audit-row" role="row" key={`${row.listId}:${row.entry}`}>
                 <div>
                   <code>{row.entry}</code>
-                  <span>{row.listName}</span>
+                  <span>
+                    {row.listName} · {row.listType.toUpperCase()}
+                  </span>
+                  <small className="audit-sources">
+                    Upstream: {row.sourceNames.join(", ") || "Source unavailable"}
+                  </small>
                 </div>
                 {canUnblock && (
                   <button
@@ -235,9 +254,13 @@ export function BlockAudit({ apiFetch, canUnblock, setNotice }: Props) {
                 <div>
                   <code>{event.entry}</code>
                   <span>
-                    {event.list_name} · {dateLabel(event.occurred_at)} ·{" "}
+                    {event.list_name} ({event.list_type.toUpperCase()}) ·{" "}
+                    {dateLabel(event.occurred_at)} ·{" "}
                     {reasonLabel(event.reason)}
                   </span>
+                  <small className="audit-sources">
+                    Upstream: {event.sourceNames.join(", ") || "Source unavailable"}
+                  </small>
                 </div>
                 <span className={`audit-action ${event.action}`}>
                   {event.action}

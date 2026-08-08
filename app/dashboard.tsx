@@ -1,6 +1,14 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import {
+  type CSSProperties,
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   contrastingTextColor,
   DEFAULT_CUSTOM_THEME,
@@ -12,6 +20,7 @@ import {
 } from "../lib/appearance";
 import { AppearanceSettings } from "./appearance-settings";
 import { BlockAudit } from "./block-audit";
+import { BrandMark } from "./brand-mark";
 import { InitialSetup } from "./initial-setup";
 import { MaintenanceSettings } from "./maintenance-settings";
 import { ProfileSettings } from "./profile-settings";
@@ -40,6 +49,16 @@ type Source = {
   refresh_interval_minutes: number;
   next_refresh_at: string | null;
   role: "include" | "exclude";
+};
+
+const BUILT_IN_PREVIEW_PALETTES: Record<
+  Exclude<AppTheme, "custom">,
+  { navigation: string; accent: string }
+> = {
+  signal: { navigation: "#173b2b", accent: "#c8f257" },
+  ocean: { navigation: "#15374a", accent: "#67d5ff" },
+  ember: { navigation: "#4a231c", accent: "#ffd166" },
+  midnight: { navigation: "#0b110d", accent: "#9ee35d" },
 };
 
 type PublishedList = {
@@ -174,8 +193,19 @@ export function Dashboard() {
   const [needsToken, setNeedsToken] = useState(false);
   const [providers, setProviders] = useState<AuthProvider[]>([]);
   const [adminTokenEnabled, setAdminTokenEnabled] = useState(false);
+  const [localAuthEnabled, setLocalAuthEnabled] = useState(true);
+  const [ssoEnforced, setSsoEnforced] = useState(false);
+  const [emergencyLocalRecovery] = useState(() =>
+    typeof window === "undefined"
+      ? false
+      : new URLSearchParams(window.location.search).get("local_recovery") ===
+        "1",
+  );
   const [setupRequired, setSetupRequired] = useState<boolean | null>(null);
   const [currentUser, setCurrentUser] = useState<ManagementUser | null>(null);
+  const [brandingImageVersion, setBrandingImageVersion] = useState<
+    string | null
+  >(null);
   const [appTheme, setAppTheme] = useState<AppTheme>(() => {
     if (typeof window === "undefined") return "signal";
     const saved = window.localStorage.getItem("openedl-app-theme");
@@ -201,6 +231,7 @@ export function Dashboard() {
   const [editingRemote, setEditingRemote] = useState<Source | null>(null);
   const [editingManual, setEditingManual] = useState<Source | null>(null);
   const [editingList, setEditingList] = useState<PublishedList | null>(null);
+  const [selectedListId, setSelectedListId] = useState<number | null>(null);
   const [manualName, setManualName] = useState("");
   const [manualDraft, setManualDraft] = useState("");
   const [listName, setListName] = useState("");
@@ -276,11 +307,15 @@ export function Dashboard() {
               (await response.json()) as {
                 providers?: AuthProvider[];
                 adminTokenEnabled?: boolean;
+                localAuthEnabled?: boolean;
+                ssoEnforced?: boolean;
               },
           )
           .then((payload) => {
             setProviders(payload.providers ?? []);
             setAdminTokenEnabled(Boolean(payload.adminTokenEnabled));
+            setLocalAuthEnabled(payload.localAuthEnabled !== false);
+            setSsoEnforced(Boolean(payload.ssoEnforced));
           }),
         fetch("/api/setup", { cache: "no-store" })
           .then(async (response) => {
@@ -318,12 +353,14 @@ export function Dashboard() {
               (await response.json()) as {
                 theme?: AppTheme;
                 customTheme?: CustomThemeColors;
+                brandingImage?: { version?: string } | null;
               },
           )
           .then((payload) => {
             if (isAppTheme(payload.theme)) setAppTheme(payload.theme);
             const colors = parseCustomThemeColors(payload.customTheme);
             if (colors) setCustomTheme(colors);
+            setBrandingImageVersion(payload.brandingImage?.version ?? null);
           }),
       ]);
     });
@@ -364,11 +401,65 @@ export function Dashboard() {
     );
   }, [appTheme, customTheme]);
 
-  const list = data?.lists[0] ?? null;
+  useEffect(() => {
+    const faviconUrl = brandingImageVersion
+      ? `/api/branding/image?v=${encodeURIComponent(brandingImageVersion)}`
+      : "/favicon.svg";
+    const icons = document.querySelectorAll<HTMLLinkElement>(
+      'link[rel="icon"], link[rel="shortcut icon"]',
+    );
+    if (icons.length === 0) {
+      const icon = document.createElement("link");
+      icon.rel = "icon";
+      icon.href = faviconUrl;
+      document.head.append(icon);
+      return;
+    }
+    icons.forEach((icon) => {
+      icon.href = faviconUrl;
+    });
+  }, [brandingImageVersion]);
+
+  const list =
+    data?.lists.find((candidate) => candidate.id === selectedListId) ??
+    data?.lists[0] ??
+    null;
+  const sourceFormCopy = {
+    ip: {
+      name: "e.g. Emerging Threats Block IPs",
+      remoteUrl: "https://example.com/ip-blocklist.txt",
+      entries: "203.0.113.40\n198.51.100.0/24",
+      label: "IP addresses, ranges, or CIDR blocks",
+    },
+    domain: {
+      name: "e.g. Phishing domain feed",
+      remoteUrl: "https://example.com/domain-blocklist.txt",
+      entries: "malware.example\nphishing.example",
+      label: "Domain names",
+    },
+    url: {
+      name: "e.g. Malicious URL feed",
+      remoteUrl: "https://example.com/url-blocklist.txt",
+      entries: "https://evil.example/path\nmalware.example/download",
+      label: "URL entries",
+    },
+  }[list?.type ?? "ip"];
   const canManage = currentUser?.role === "admin";
   const endpoint = list ? `${origin}/edl/${list.slug}` : "";
   const activeSources =
     list?.sources.filter((source) => source.enabled).length ?? 0;
+  const previewPalette =
+    appTheme === "custom"
+      ? {
+          navigation: customTheme.navigation,
+          accent: customTheme.accent,
+        }
+      : BUILT_IN_PREVIEW_PALETTES[appTheme];
+  const previewStyle = {
+    "--preview-background": previewPalette.navigation,
+    "--preview-accent": previewPalette.accent,
+    "--preview-text": contrastingTextColor(previewPalette.navigation),
+  } as CSSProperties;
   const sourceRows = useMemo(() => list?.sources ?? [], [list]);
   const latestSuccess = sourceRows
     .map((source) => source.last_success_at)
@@ -730,14 +821,19 @@ export function Dashboard() {
     setIsSigningIn(true);
     setNotice("");
     try {
-      const response = await fetch("/api/auth/local", {
+      const response = await fetch(
+        emergencyLocalRecovery
+          ? "/api/auth/local/recovery"
+          : "/api/auth/local",
+        {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           email: localEmail,
           password: localPassword,
         }),
-      });
+        },
+      );
       const payload = (await response.json()) as { error?: string };
       if (!response.ok) {
         throw new Error(payload.error ?? "Unable to sign in.");
@@ -786,9 +882,7 @@ export function Dashboard() {
     return (
       <main className="auth-shell">
         <section className="auth-card setup-loading" aria-live="polite">
-          <div className="brand-mark" aria-hidden="true">
-            OE
-          </div>
+          <BrandMark brandingImageVersion={brandingImageVersion} />
           <div className="loading-orbit" aria-hidden="true" />
           <p>Preparing secure access…</p>
         </section>
@@ -797,56 +891,71 @@ export function Dashboard() {
   }
 
   if (setupRequired) {
-    return <InitialSetup onComplete={completeInitialSetup} />;
+    return (
+      <InitialSetup
+        onComplete={completeInitialSetup}
+        brandingImageVersion={brandingImageVersion}
+      />
+    );
   }
 
   if (needsToken) {
     return (
       <main className="auth-shell">
         <section className="auth-card">
-          <div className="brand-mark" aria-hidden="true">
-            OE
-          </div>
+          <BrandMark brandingImageVersion={brandingImageVersion} />
           <p className="eyebrow">OpenEDL control plane</p>
           <h1>Secure management access</h1>
           <p>
-            Sign in with a local account or your organization&apos;s identity
-            provider. Public EDL endpoints remain available without a
-            management session.
+            {emergencyLocalRecovery
+              ? "Emergency access accepts an active local administrator account."
+              : ssoEnforced
+                ? "Sign in with your organization’s identity provider."
+                : "Sign in with a local account or your organization’s identity provider."}{" "}
+            Public EDL endpoints remain available without a management
+            session.
           </p>
           {notice && <p className="form-error">{notice}</p>}
-          <form className="local-auth-form" onSubmit={localSignIn}>
-            <label htmlFor="local-email">Email address</label>
-            <input
-              id="local-email"
-              type="email"
-              value={localEmail}
-              onChange={(event) => setLocalEmail(event.target.value)}
-              autoComplete="username"
-              required
-            />
-            <label htmlFor="local-password">Password</label>
-            <input
-              id="local-password"
-              type="password"
-              value={localPassword}
-              onChange={(event) => setLocalPassword(event.target.value)}
-              autoComplete="current-password"
-              required
-            />
-            <button
-              className="primary-button"
-              type="submit"
-              disabled={isSigningIn}
-            >
-              {isSigningIn ? "Signing in…" : "Sign in"}
-            </button>
-          </form>
+          {(localAuthEnabled || emergencyLocalRecovery) && (
+            <form className="local-auth-form" onSubmit={localSignIn}>
+              <label htmlFor="local-email">Email address</label>
+              <input
+                id="local-email"
+                type="email"
+                value={localEmail}
+                onChange={(event) => setLocalEmail(event.target.value)}
+                autoComplete="username"
+                required
+              />
+              <label htmlFor="local-password">Password</label>
+              <input
+                id="local-password"
+                type="password"
+                value={localPassword}
+                onChange={(event) => setLocalPassword(event.target.value)}
+                autoComplete="current-password"
+                required
+              />
+              <button
+                className="primary-button"
+                type="submit"
+                disabled={isSigningIn}
+              >
+                {isSigningIn
+                  ? "Signing in…"
+                  : emergencyLocalRecovery
+                    ? "Use emergency local access"
+                    : "Sign in"}
+              </button>
+            </form>
+          )}
           {providers.length > 0 && (
             <>
-              <div className="auth-divider">
-                <span>or continue with SSO</span>
-              </div>
+              {(localAuthEnabled || emergencyLocalRecovery) && (
+                <div className="auth-divider">
+                  <span>or continue with SSO</span>
+                </div>
+              )}
               <div className="sso-options">
                 {providers.map((provider) => (
                   <a
@@ -865,6 +974,11 @@ export function Dashboard() {
                 ))}
               </div>
             </>
+          )}
+          {ssoEnforced && !emergencyLocalRecovery && (
+            <Link className="emergency-auth-link" href="/?local_recovery=1">
+              SSO unavailable? Use emergency local access
+            </Link>
           )}
           {adminTokenEnabled && (
             <div className="auth-divider">
@@ -896,9 +1010,7 @@ export function Dashboard() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark" aria-hidden="true">
-            OE
-          </div>
+          <BrandMark brandingImageVersion={brandingImageVersion} />
           <div>
             <strong>OpenEDL</strong>
             <span>Signal control</span>
@@ -999,7 +1111,7 @@ export function Dashboard() {
             </span>
           </div>
           <div className="topbar-actions">
-            <a href="/edl/perimeter-blocklist" target="_blank">
+            <a href={list ? `/edl/${list.slug}` : "/"} target="_blank">
               View raw feed
             </a>
             <button
@@ -1046,6 +1158,8 @@ export function Dashboard() {
               customTheme={customTheme}
               onThemeChange={setAppTheme}
               onCustomThemeChange={setCustomTheme}
+              brandingImageVersion={brandingImageVersion}
+              onBrandingImageChange={setBrandingImageVersion}
               setNotice={setNotice}
             />
           ) : activeView === "maintenance" &&
@@ -1093,6 +1207,20 @@ export function Dashboard() {
 
               {list && (
                 <>
+                  <section className="list-selector" aria-label="Published list type">
+                    {data?.lists.map((candidate) => (
+                      <button
+                        key={candidate.id}
+                        type="button"
+                        className={candidate.id === list.id ? "active" : ""}
+                        onClick={() => setSelectedListId(candidate.id)}
+                      >
+                        <span>{candidate.type.toUpperCase()}</span>
+                        <strong>{candidate.name}</strong>
+                        <code>/edl/{candidate.slug}</code>
+                      </button>
+                    ))}
+                  </section>
                   <section className="endpoint-card">
                     <div className="endpoint-icon" aria-hidden="true">
                       ↗
@@ -1335,7 +1463,7 @@ export function Dashboard() {
                             {list.type.toUpperCase()}
                           </span>
                         </div>
-                        <div className="code-preview">
+                        <div className="code-preview" style={previewStyle}>
                           <div className="code-toolbar">
                             <span />
                             <span />
@@ -1418,7 +1546,7 @@ export function Dashboard() {
                   onChange={(event) =>
                     setForm({ ...form, name: event.target.value })
                   }
-                  placeholder="e.g. Emerging Threats Block IPs"
+                  placeholder={sourceFormCopy.name}
                   required
                   autoFocus
                 />
@@ -1467,14 +1595,16 @@ export function Dashboard() {
                     onChange={(event) =>
                       setForm({ ...form, url: event.target.value })
                     }
-                    placeholder="https://example.com/blocklist.txt"
+                    placeholder={sourceFormCopy.remoteUrl}
                     required
                   />
                   <small>HTTP and HTTPS only. Private networks are blocked.</small>
                 </div>
               ) : form.kind === "manual" ? (
                 <div className="field">
-                  <label htmlFor="manual-entries">Entries</label>
+                  <label htmlFor="manual-entries">
+                    {sourceFormCopy.label}
+                  </label>
                   <input
                     id="manual-csv-upload"
                     type="file"
@@ -1493,7 +1623,7 @@ export function Dashboard() {
                     onChange={(event) =>
                       setForm({ ...form, manualEntries: event.target.value })
                     }
-                    placeholder={"203.0.113.40\n198.51.100.0/24"}
+                    placeholder={sourceFormCopy.entries}
                     rows={7}
                     required
                   />

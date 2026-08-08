@@ -1,9 +1,13 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import { getBrandingImageMetadata } from "../db/core";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
-  const requestHeaders = await headers();
+  const [requestHeaders, brandingImage] = await Promise.all([
+    headers(),
+    getBrandingImageMetadata(),
+  ]);
   const host =
     requestHeaders.get("x-forwarded-host") ??
     requestHeaders.get("host") ??
@@ -16,14 +20,17 @@ export async function generateMetadata(): Promise<Metadata> {
   const description =
     "Aggregate, normalize, deduplicate, and publish vendor-neutral external dynamic lists.";
   const socialImage = new URL("/og.png", baseUrl);
+  const applicationIcon = brandingImage
+    ? `/api/branding/image?v=${encodeURIComponent(brandingImage.version)}`
+    : "/favicon.svg";
 
   return {
     metadataBase: baseUrl,
     title,
     description,
     icons: {
-      icon: "/favicon.svg",
-      shortcut: "/favicon.svg",
+      icon: applicationIcon,
+      shortcut: applicationIcon,
     },
     openGraph: {
       title,

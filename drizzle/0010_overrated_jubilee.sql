@@ -1,0 +1,1 @@
+ALTER TABLE `block_audit_events` ADD `source_names` text DEFAULT '[]' NOT NULL;

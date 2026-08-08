@@ -1,5 +1,6 @@
 import {
   getAppTheme,
+  getBrandingImageMetadata,
   getCustomTheme,
   updateAppTheme,
   updateCustomTheme,
@@ -8,13 +9,15 @@ import { isAppTheme } from "../../../../lib/appearance";
 import { getManagementIdentity } from "../../../../lib/auth";
 
 export async function GET() {
-  const [theme, customTheme] = await Promise.all([
+  const [theme, customTheme, brandingImage] = await Promise.all([
     getAppTheme(),
     getCustomTheme(),
+    getBrandingImageMetadata(),
   ]);
   return Response.json({
     theme,
     customTheme,
+    brandingImage,
   });
 }
 
@@ -46,13 +49,15 @@ export async function PATCH(request: Request) {
     if (payload.theme !== undefined) {
       await updateAppTheme(payload.theme);
     }
-    const [theme, customTheme] = await Promise.all([
+    const [theme, customTheme, brandingImage] = await Promise.all([
       getAppTheme(),
       getCustomTheme(),
+      getBrandingImageMetadata(),
     ]);
     return Response.json({
       theme,
       customTheme,
+      brandingImage,
     });
   } catch (error) {
     return Response.json(
