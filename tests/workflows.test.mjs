@@ -11,6 +11,10 @@ test("publishes containers only for releases or explicit manual runs", async () 
     new URL("../.github/workflows/validate.yml", import.meta.url),
     "utf8",
   );
+  const dockerIgnore = await readFile(
+    new URL("../.dockerignore", import.meta.url),
+    "utf8",
+  );
 
   assert.match(publish, /^  release:\n    types:\n      - published$/m);
   assert.match(publish, /^  workflow_dispatch:$/m);
@@ -24,6 +28,7 @@ test("publishes containers only for releases or explicit manual runs", async () 
   assert.match(validate, /^  pull_request:$/m);
   assert.match(validate, /run: npm run lint/);
   assert.match(validate, /run: npm test/);
+  assert.doesNotMatch(dockerIgnore, /^\.github$/m);
 
   await assert.rejects(
     access(
