@@ -21,6 +21,9 @@ test("publishes containers only for releases or explicit manual runs", async () 
   assert.doesNotMatch(publish, /^  push:$/m);
   assert.doesNotMatch(publish, /^  pull_request:$/m);
   assert.match(publish, /type=raw,value=\$\{\{ steps\.release\.outputs\.tag \}\}/);
+  assert.match(publish, /type=raw,value=\$\{\{ steps\.release\.outputs\.minor \}\}/);
+  assert.match(publish, /type=raw,value=\$\{\{ steps\.release\.outputs\.major \}\}/);
+  assert.doesNotMatch(publish, /type=semver/);
   assert.match(publish, /type=raw,value=latest/);
   assert.match(publish, /^          push: true$/m);
 

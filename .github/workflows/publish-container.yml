@@ -58,6 +58,10 @@ jobs:
           fi
 
           version="${RELEASE_TAG#v}"
+          major="${version%%.*}"
+          minor_rest="${version#*.}"
+          minor_component="${minor_rest%%.*}"
+          minor="$major.$minor_component"
           stable=true
           if [[ "$version" == *-* ]]; then
             stable=false
@@ -71,6 +75,8 @@ jobs:
 
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "major=$major" >> "$GITHUB_OUTPUT"
+          echo "minor=$minor" >> "$GITHUB_OUTPUT"
           echo "stable=$stable" >> "$GITHUB_OUTPUT"
           echo "publish_latest=$publish_latest" >> "$GITHUB_OUTPUT"
 
@@ -132,8 +138,8 @@ jobs:
           tags: |
             type=raw,value=${{ steps.release.outputs.tag }}
             type=raw,value=${{ steps.release.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release.outputs.version }},enable=${{ steps.release.outputs.stable == 'true' }}
-            type=semver,pattern={{major}},value=${{ steps.release.outputs.version }},enable=${{ steps.release.outputs.stable == 'true' }}
+            type=raw,value=${{ steps.release.outputs.minor }},enable=${{ steps.release.outputs.stable == 'true' }}
+            type=raw,value=${{ steps.release.outputs.major }},enable=${{ steps.release.outputs.stable == 'true' }}
             type=raw,value=latest,enable=${{ steps.release.outputs.publish_latest == 'true' }}
 
       - name: Build and publish image
